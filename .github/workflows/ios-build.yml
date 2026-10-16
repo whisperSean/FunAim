@@ -1,0 +1,48 @@
+name: iOS Build Check
+
+# 免 Mac 云端编译验证：push 到 GitHub 即自动生成工程并编译（iOS 模拟器，无需签名）
+on:
+  push:
+    paths: ['FunAim/**', '.github/workflows/ios-build.yml']
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-14
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # 兼容两种仓库布局：FunAim 作为根目录，或作为子目录
+      - name: Resolve project dir
+        id: dir
+        run: echo "dir=$([ -d FunAim ] && echo FunAim || echo .)" >> "$GITHUB_OUTPUT"
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        working-directory: ${{ steps.dir.outputs.dir }}
+        run: xcodegen
+
+      - name: Build (iOS Simulator, no signing)
+        working-directory: ${{ steps.dir.outputs.dir }}
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project FunAim.xcodeproj \
+            -target FunAim \
+            -configuration Debug \
+            -sdk iphonesimulator \
+            CODE_SIGNING_ALLOWED=NO \
+            build 2>&1 | tee build.log | grep -E "(error:|warning:|BUILD)"
+
+      - name: Upload simulator .app artifact
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: FunAim-simulator-app
+          path: |
+            ~/Library/Developer/Xcode/DerivedData/**/Build/Products/Debug-iphonesimulator/FunAim.app
+          if-no-files-found: warn
+          retention-days: 7

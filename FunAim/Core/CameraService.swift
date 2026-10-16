@@ -1,0 +1,187 @@
+import AVFoundation
+import Foundation
+
+enum CameraError: LocalizedError {
+    case noCamera
+    case cannotAddInput
+    case cannotAddOutput
+
+    var errorDescription: String? {
+        switch self {
+        case .noCamera: return "未找到可用的摄像头设备"
+        case .cannotAddInput: return "无法添加摄像头输入源"
+        case .cannotAddOutput: return "无法添加视频输出流"
+        }
+    }
+}
+
+/// 相机服务：采集 + 帧分发 + FPS 统计
+/// 预览层独立渲染（最高 60fps），AI 推理按"运行模式"的帧间隔执行，两者互不阻塞
+final class CameraService: NSObject, ObservableObject {
+
+    static let shared = CameraService()
+
+    let session = AVCaptureSession()
+
+    @Published private(set) var isRunning = false
+    @Published private(set) var fps: Double = 0
+    @Published private(set) var inferenceMs: Double = 0
+    @Published private(set) var detectionCount = 0
+    /// 实际送入推理的像素缓冲尺寸（竖屏方向）
+    @Published private(set) var bufferSize: CGSize = .zero
+    @Published var lastError: String?
+
+    // 由设置界面驱动的推理参数（主线程写入，采集线程读取）
+    var frameStride = 2
+    var minConfidence: Float = 0.5
+
+    /// 检测结果回调（主线程）
+    var onDetection: (([DetectedPerson]) -> Void)?
+
+    private let videoOutput = AVCaptureVideoDataOutput()
+    private let sessionQueue = DispatchQueue(label: "funaim.session", qos: .userInteractive)
+    private let outputQueue = DispatchQueue(label: "funaim.capture", qos: .userInteractive)
+    private let detector = PersonDetector()
+
+    private var frameCounter = 0
+    private var framesSinceMark = 0
+    private var lastFPSMark = Date()
+    private var isConfigured = false
+
+    private override init() {
+        super.init()
+    }
+
+    /// 幂等：配置并启动采集会话（后台线程执行，避免阻塞主线程）
+    func configureAndStart() {
+        sessionQueue.async { [weak self] in
+            guard let self, !self.isRunning else { return }
+            if !self.isConfigured {
+                do {
+                    try self.configure()
+                    self.isConfigured = true
+                } catch {
+                    DispatchQueue.main.async { self.lastError = error.localizedDescription }
+                    return
+                }
+            }
+            self.session.startRunning()
+            DispatchQueue.main.async { self.isRunning = self.session.isRunning }
+        }
+    }
+
+    func stop() {
+        sessionQueue.async { [weak self] in
+            guard let self else { return }
+            self.session.stopRunning()
+            DispatchQueue.main.async { self.isRunning = false }
+        }
+    }
+
+    // MARK: - 配置
+
+    private func configure() throws {
+        guard let device = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .back) else {
+            throw CameraError.noCamera
+        }
+
+        // 优先选择 720p@60fps 格式；不支持时回退 720p@30
+        let highFPS = (try? selectHighFrameRateFormat(for: device)) ?? false
+
+        let input = try AVCaptureDeviceInput(device: device)
+
+        session.beginConfiguration()
+        session.sessionPreset = highFPS ? .inputPriority : .hd1280x720
+        guard session.canAddInput(input) else {
+            session.commitConfiguration()
+            throw CameraError.cannotAddInput
+        }
+        session.addInput(input)
+
+        videoOutput.videoSettings = [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA]
+        videoOutput.alwaysDiscardsLateVideoFrames = true
+        videoOutput.setSampleBufferDelegate(self, queue: outputQueue)
+        guard session.canAddOutput(videoOutput) else {
+            session.commitConfiguration()
+            throw CameraError.cannotAddOutput
+        }
+        session.addOutput(videoOutput)
+
+        // 统一竖屏输出：预览、推理、坐标映射三端一致
+        // iOS 17 起使用新旋转 API（videoOrientation 已废弃）
+        if let connection = videoOutput.connection(with: .video) {
+            if #available(iOS 17.0, *) {
+                if connection.isVideoRotationAngleSupported(90) {
+                    connection.videoRotationAngle = 90
+                }
+            } else if connection.isVideoOrientationSupported {
+                connection.videoOrientation = .portrait
+            }
+        }
+        session.commitConfiguration()
+    }
+
+    /// 在设备支持范围内选取 ≤1080p 且能跑 60fps 的最优格式（优先 720p60）
+    private func selectHighFrameRateFormat(for device: AVCaptureDevice) throws -> Bool {
+        var bestFormat: AVCaptureDevice.Format?
+        var bestScore = -1
+        for format in device.formats {
+            let dims = CMVideoFormatDescriptionGetDimensions(format.formatDescription)
+            guard dims.width <= 1920, dims.height <= 1080 else { continue }
+            guard let maxRate = format.videoSupportedFrameRateRanges.map({ $0.maxFrameRate }).max(),
+                  maxRate >= 60 else { continue }
+            let score = (dims.height == 720 ? 100_000 : 0) + Int(dims.height) + Int(maxRate)
+            if score > bestScore {
+                bestScore = score
+                bestFormat = format
+            }
+        }
+        guard let format = bestFormat else { return false }
+        try device.lockForConfiguration()
+        device.activeFormat = format
+        let frameDuration = CMTime(value: 1, timescale: 60)
+        device.activeVideoMinFrameDuration = frameDuration
+        device.activeVideoMaxFrameDuration = frameDuration
+        device.unlockForConfiguration()
+        return true
+    }
+}
+
+// MARK: - 采集回调
+
+extension CameraService: AVCaptureVideoDataOutputSampleBufferDelegate {
+
+    func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
+        // 记录实际缓冲尺寸（竖屏旋转后），供坐标映射使用
+        if bufferSize == .zero, let pb = CMSampleBufferGetImageBuffer(sampleBuffer) {
+            let size = CGSize(width: CVPixelBufferGetWidth(pb), height: CVPixelBufferGetHeight(pb))
+            DispatchQueue.main.async { [weak self] in
+                if self?.bufferSize == .zero { self?.bufferSize = size }
+            }
+        }
+
+        // FPS 统计（约 1Hz 刷新；@Published 必须回主线程更新）
+        framesSinceMark += 1
+        let now = Date()
+        let interval = now.timeIntervalSince(lastFPSMark)
+        if interval >= 1 {
+            let measured = Double(framesSinceMark) / interval
+            framesSinceMark = 0
+            lastFPSMark = now
+            DispatchQueue.main.async { [weak self] in self?.fps = measured }
+        }
+
+        // 按"运行模式"的帧间隔送入本地推理
+        frameCounter += 1
+        guard frameCounter % max(frameStride, 1) == 0,
+              let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
+
+        let minConf = minConfidence
+        detector.detect(pixelBuffer: pixelBuffer, minConfidence: minConf) { [weak self] persons, cost in
+            guard let self else { return }
+            self.inferenceMs = cost
+            self.detectionCount = persons.count
+            self.onDetection?(persons)
+        }
+    }
+}

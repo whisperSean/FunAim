@@ -1,0 +1,10 @@
+# Xcode 生成物（xcodegen 会重新生成，不入库）
+*.xcodeproj
+xcuserdata/
+DerivedData/
+build/
+build.log
+
+# 系统文件
+.DS_Store
+Thumbs.db

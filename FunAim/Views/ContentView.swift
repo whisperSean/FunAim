@@ -1,0 +1,224 @@
+import SwiftUI
+
+/// 主界面：权限门控 → 全画幅预览 + 叠加层 + 灵动岛式状态胶囊 + 玻璃 HUD + 悬浮控制窗
+/// 安全区策略：预览延伸至灵动岛/状态栏/home indicator 之下，
+/// 所有可交互与信息层位于安全区内，自动避让系统区域。
+struct ContentView: View {
+
+    @StateObject private var permission = PermissionManager()
+    @ObservedObject private var camera = CameraService.shared
+    @StateObject private var aim = AimEngine()
+    @ObservedObject private var settings = AppSettings.shared
+
+    @State private var mapped: [MappedPerson] = []
+    @State private var viewSize: CGSize = .zero
+    @State private var showSettings = false
+    @Environment(\.scenePhase) private var scenePhase
+
+    var body: some View {
+        ZStack {
+            Color.black.ignoresSafeArea()
+            switch permission.status {
+            case .undetermined: launchView
+            case .denied:       deniedView
+            case .authorized:   cameraView
+            }
+        }
+        .onAppear(perform: requestPermissionOnLaunch)
+        .onChange(of: scenePhase) { phase in
+            switch phase {
+            case .active:
+                permission.refresh()
+                if permission.status == .authorized {
+                    camera.configureAndStart()
+                }
+            case .background:
+                // 退后台释放摄像头：省电且熄灭系统相机指示灯
+                camera.stop()
+            default:
+                break
+            }
+        }
+    }
+
+    // MARK: - 相机主界面
+
+    private var cameraView: some View {
+        ZStack {
+            // 全画幅预览 + 叠加层（延伸至灵动岛与 home indicator 之下）
+            GeometryReader { geo in
+                ZStack {
+                    CameraPreviewView(session: camera.session)
+                    OverlayView(persons: mapped,
+                                reticlePoint: aim.reticlePoint(in: geo.size),
+                                targetID: aim.targetID)
+                }
+                .onAppear {
+                    viewSize = geo.size
+                    startPipeline()
+                }
+                .onChange(of: geo.size) { newSize in
+                    viewSize = newSize
+                }
+            }
+            .ignoresSafeArea()
+
+            // 安全区内的自适应玻璃层（灵动岛下方起步，自动避让系统区域）
+            VStack(spacing: 10) {
+                DynamicStatusCapsule(
+                    phase: statusPhase,
+                    targetCount: camera.detectionCount,
+                    fps: Int(camera.fps)
+                )
+
+                HStack(alignment: .top, spacing: 12) {
+                    if settings.showHUD {
+                        hudChip
+                            .transition(.opacity.combined(with: .move(edge: .top)))
+                    }
+                    Spacer(minLength: 0)
+                    if settings.showFloatPanel {
+                        FloatingPanel(camera: camera, aimEnabled: $settings.aimEnabled) {
+                            showSettings = true
+                        }
+                    }
+                }
+                .padding(.horizontal, 14)
+                .animation(Motion.spring, value: settings.showHUD)
+                .animation(Motion.spring, value: settings.showFloatPanel)
+
+                Spacer(minLength: 0)
+            }
+            .padding(.top, 4)
+        }
+        .accentColor(.green)
+        .sheet(isPresented: $showSettings) { SettingsView() }
+        .onChange(of: settings.detectionMode) { camera.frameStride = $0.frameStride }
+        .onChange(of: settings.minConfidence) { camera.minConfidence = Float($0) }
+        .alert("摄像头不可用",
+               isPresented: Binding(
+                   get: { camera.lastError != nil },
+                   set: { if !$0 { camera.lastError = nil } }
+               ),
+               actions: {
+                   Button("知道了", role: .cancel) {}
+               },
+               message: { Text(camera.lastError ?? "") })
+    }
+
+    // MARK: - 状态推导
+
+    private var statusPhase: DynamicStatusCapsule.Phase {
+        if !settings.aimEnabled { return .idle }
+        if aim.locked { return .locked }
+        return camera.detectionCount > 0 ? .tracking : .searching
+    }
+
+    // MARK: - 数据管线装配（逻辑不变）
+
+    private func startPipeline() {
+        camera.frameStride = settings.detectionMode.frameStride
+        camera.minConfidence = Float(settings.minConfidence)
+        camera.onDetection = { persons in
+            guard viewSize != .zero else { return }
+            let mapper = CoordinateMapper(viewSize: viewSize, bufferSize: camera.bufferSize)
+            let mappedPersons = persons.map { MappedPerson(person: $0, viewRect: mapper.map($0.box)) }
+            mapped = mappedPersons
+            updateAim(with: mappedPersons, in: viewSize)
+        }
+        camera.configureAndStart()
+    }
+
+    private func updateAim(with persons: [MappedPerson], in size: CGSize) {
+        guard settings.aimEnabled else {
+            aim.reset()
+            return
+        }
+        if let target = aim.selectTarget(from: persons, viewSize: size, lockStrength: settings.lockStrength) {
+            aim.moveReticle(toward: target.center, in: size, tracking: settings.aimTracking)
+        } else {
+            // 无目标时准星缓慢回归画面中心
+            aim.moveReticle(toward: CGPoint(x: size.width / 2, y: size.height / 2),
+                            in: size, tracking: 0.03)
+        }
+    }
+
+    // MARK: - 玻璃 HUD
+
+    private var hudChip: some View {
+        GlassChip {
+            VStack(alignment: .leading, spacing: 3) {
+                Text("FunAim · 本地推理")
+                    .font(.caption2.bold())
+                    .foregroundColor(.secondary)
+                Text("FPS \(Int(camera.fps))   推理 \(String(format: "%.0f", camera.inferenceMs))ms   目标 \(camera.detectionCount)")
+                    .font(.caption.monospacedDigit())
+                    .foregroundColor(.primary)
+            }
+        }
+        .allowsHitTesting(false)
+    }
+
+    // MARK: - 权限门控视图
+
+    /// 启动页：申请权限期间展示
+    private var launchView: some View {
+        VStack(spacing: 22) {
+            Image(systemName: "camera.viewfinder")
+                .font(.system(size: 58, weight: .light))
+                .foregroundColor(.white.opacity(0.9))
+                .modifier(PulseEffect(scale: 1.05))
+            Text("FunAim 人物锁定演示")
+                .font(.title3.bold())
+                .foregroundColor(.white)
+            ProgressView()
+                .tint(.white)
+            Text("正在请求摄像头权限…")
+                .font(.footnote)
+                .foregroundColor(.white.opacity(0.55))
+        }
+    }
+
+    /// 权限被拒：友好提示 + 引导跳转系统设置
+    private var deniedView: some View {
+        VStack(spacing: 22) {
+            Image(systemName: "video.slash.fill")
+                .font(.system(size: 56, weight: .light))
+                .foregroundColor(.secondary)
+            Text("需要摄像头权限")
+                .font(.title2.bold())
+            Text("本应用的全部功能都基于摄像头实时画面完成，所有 AI 识别均在手机本地运行，不会录制或上传任何画面。\n\n请前往「设置 → 隐私与安全性 → 摄像头」开启权限后返回。")
+                .font(.subheadline)
+                .foregroundColor(.secondary)
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, 28)
+
+            Button {
+                permission.openSystemSettings()
+            } label: {
+                Label("前往系统设置", systemImage: "gearshape.fill")
+                    .font(.body.weight(.semibold))
+                    .foregroundColor(.white)
+                    .padding(.horizontal, 22)
+                    .padding(.vertical, 13)
+                    .background(Capsule(style: .continuous).fill(Color.green))
+            }
+            .buttonStyle(PressableButtonStyle())
+
+            Button("我已开启，重新检测") {
+                permission.refresh()
+            }
+            .font(.subheadline.weight(.medium))
+            .foregroundColor(.secondary)
+            .buttonStyle(PressableButtonStyle())
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color.black.ignoresSafeArea())
+    }
+
+    private func requestPermissionOnLaunch() {
+        if permission.status == .undetermined {
+            permission.request()
+        }
+    }
+}

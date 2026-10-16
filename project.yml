@@ -1,0 +1,24 @@
+name: FunAim
+options:
+  bundleIdPrefix: com.funlab
+  deploymentTarget:
+    iOS: "15.0"
+  createIntermediateGroups: true
+settings:
+  base:
+    SWIFT_VERSION: "5.7"
+    TARGETED_DEVICE_FAMILY: "1"
+    CODE_SIGN_STYLE: Automatic
+targets:
+  FunAim:
+    type: application
+    platform: iOS
+    sources:
+      - path: FunAim
+    info:
+      path: FunAim/Info.plist
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.funlab.funaim
+        PRODUCT_NAME: FunAim
+        INFOPLIST_FILE: FunAim/Info.plist
