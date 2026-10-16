@@ -20,8 +20,7 @@
 
 ```
 FunAim/
-├── project.yml                 # XcodeGen 工程描述
-├── Info.plist                  # 含 NSCameraUsageDescription
+├── project.yml                 # XcodeGen 工程描述（含 Info.plist 全部键值，构建时自动生成）
 └── FunAim/
     ├── App/FunAimApp.swift     # 入口
     ├── Core/
@@ -119,7 +118,7 @@ open FunAim.xcodeproj
 1. Xcode → Create New Project → iOS App，命名 `FunAim`，Interface 选 SwiftUI，最低版本 iOS 15.0；
 2. 删除模板 `ContentView.swift`；
 3. 把 `FunAim/FunAim/` 下全部 `.swift` 拖入工程（勾选 Copy items if needed）；
-4. Info.plist 确保包含 `NSCameraUsageDescription`（可直接替换为本仓库的 `Info.plist`）；
+4. Info.plist 必须包含 `NSCameraUsageDescription`（缺失会导致启动请求权限时直接闪退；云构建由 project.yml 的 `info.properties` 自动生成）；
 5. 勾选 Portrait 单方向，iPhone 目标。
 
 ## 测试注意

@@ -17,6 +17,17 @@ targets:
       - path: FunAim
     info:
       path: FunAim/Info.plist
+      properties:
+        CFBundleDevelopmentRegion: zh_CN
+        CFBundleDisplayName: 趣味瞄准
+        CFBundleShortVersionString: "1.0.0"
+        CFBundleVersion: "1"
+        LSRequiresIPhoneOS: true
+        NSCameraUsageDescription: 本应用需要使用摄像头实时采集画面，在手机本地完成人物 AI 识别与瞄准演示。所有画面与推理均在设备本地完成，不会录制、上传任何数据。
+        UILaunchScreen: {}
+        UIRequiresFullScreen: true
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
     scheme:
       buildTargets:
         - FunAim
