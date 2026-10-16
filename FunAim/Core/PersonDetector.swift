@@ -30,7 +30,7 @@ final class PersonDetector {
         if let modelURL = Self.locateCoreMLModel(),
            let vnModel = try? VNCoreMLModel(for: MLModel(contentsOf: modelURL)) {
             let coreMLRequest = VNCoreMLRequest(model: vnModel)
-            coreMLRequest.cropAndScaleOption = .scaleFit
+            coreMLRequest.cropAndScale = .scaleFit
             request = coreMLRequest
             usesCoreML = true
         } else {
