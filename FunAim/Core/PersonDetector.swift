@@ -29,7 +29,7 @@ final class PersonDetector {
     init() {
         if let modelURL = Self.locateCoreMLModel(),
            let vnModel = try? VNCoreMLModel(for: MLModel(contentsOf: modelURL)) {
-            let coreMLRequest = VNCoreMLRequest(model: vnModel, options: [:])
+            let coreMLRequest = VNCoreMLRequest(model: vnModel)
             coreMLRequest.cropAndScaleOption = .scaleFit
             request = coreMLRequest
             usesCoreML = true
@@ -46,7 +46,7 @@ final class PersonDetector {
                 minConfidence: Float,
                 completion: @escaping ([DetectedPerson], Double) -> Void) {
         queue.async { [request, weak self] in
-            let handler = VNImageRequestHandler(cvPixelBuffer: pixelBuffer, orientation: .top, options: [:])
+            let handler = VNImageRequestHandler(cvPixelBuffer: pixelBuffer, orientation: .up, options: [:])
             let t0 = CFAbsoluteTimeGetCurrent()
             do {
                 try handler.perform([request])
