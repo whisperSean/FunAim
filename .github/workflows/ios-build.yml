@@ -1,32 +1,27 @@
-name: iOS Build Check
+name: iOS Build & IPA
 
-# 免 Mac 云端编译验证：push 到 GitHub 即自动生成工程并编译（iOS 模拟器，无需签名）
+# 免 Mac 云端构建：push 自动编译验证 + 产出未签名 IPA 构件（供 Windows Sideloadly 侧载）
 on:
   push:
-    paths: ['FunAim/**', '.github/workflows/ios-build.yml']
+    paths: ['FunAim/**', 'project.yml', 'Info.plist', '.github/workflows/ios-build.yml']
   workflow_dispatch:
 
 jobs:
+  # 任务 1：模拟器编译验证（无需签名）
   build:
     runs-on: macos-14
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # 兼容两种仓库布局：FunAim 作为根目录，或作为子目录
-      - name: Resolve project dir
-        id: dir
-        run: echo "dir=$([ -d FunAim ] && echo FunAim || echo .)" >> "$GITHUB_OUTPUT"
-
       - name: Install XcodeGen
         run: brew install xcodegen
 
+      # project.yml 位于仓库根目录
       - name: Generate Xcode project
-        working-directory: ${{ steps.dir.outputs.dir }}
         run: xcodegen
 
       - name: Build (iOS Simulator, no signing)
-        working-directory: ${{ steps.dir.outputs.dir }}
         run: |
           set -o pipefail
           xcodebuild \
@@ -42,7 +37,45 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: FunAim-simulator-app
-          path: |
-            ~/Library/Developer/Xcode/DerivedData/**/Build/Products/Debug-iphonesimulator/FunAim.app
+          path: ~/Library/Developer/Xcode/DerivedData/**/Build/Products/Debug-iphonesimulator/FunAim.app
           if-no-files-found: warn
           retention-days: 7
+
+  # 任务 2：导出未签名 IPA（下载后用 Sideloadly/AltStore 在 Windows 上侧载签名安装）
+  ipa:
+    runs-on: macos-14
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        run: xcodegen
+
+      - name: Archive (unsigned)
+        run: |
+          xcodebuild archive \
+            -project FunAim.xcodeproj \
+            -scheme FunAim \
+            -destination 'generic/platform=iOS' \
+            -archivePath build/FunAim.xcarchive \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO
+
+      - name: Package unsigned IPA
+        run: |
+          cd build/FunAim.xcarchive/Products/Applications
+          mkdir Payload
+          cp -R FunAim.app Payload/
+          zip -qry FunAim-unsigned.ipa Payload
+          ls -lh FunAim-unsigned.ipa
+
+      - name: Upload unsigned IPA artifact
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: FunAim-unsigned-ipa
+          path: build/FunAim.xcarchive/Products/Applications/FunAim-unsigned.ipa
+          if-no-files-found: error
+          retention-days: 30

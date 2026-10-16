@@ -17,6 +17,9 @@ targets:
       - path: FunAim
     info:
       path: FunAim/Info.plist
+    scheme:
+      buildTargets:
+        - FunAim
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.funlab.funaim
