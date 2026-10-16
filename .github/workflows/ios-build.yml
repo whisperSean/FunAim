@@ -45,7 +45,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: FunAim-simulator-app
-          path: ~/Library/Developer/Xcode/DerivedData/**/Build/Products/Debug-iphonesimulator/FunAim.app
+          path: /Users/runner/Library/Developer/Xcode/DerivedData/**/Build/Products/Debug-iphonesimulator/FunAim.app
           if-no-files-found: warn
           retention-days: 7
 
