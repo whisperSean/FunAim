@@ -14,12 +14,20 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install XcodeGen
-        run: brew install xcodegen
+      # 固定 XcodeGen 2.43.0：保证生成 Xcode 15 可读的 objectVersion 56 工程格式
+      - name: Install XcodeGen (pinned 2.43.0)
+        run: |
+          curl -LsS https://github.com/yonaskolb/XcodeGen/releases/download/2.43.0/xcodegen.zip -o xcodegen.zip
+          unzip -q xcodegen.zip -d xcodegen-tmp
+          echo "$PWD/xcodegen-tmp/xcodegen/bin" >> "$GITHUB_PATH"
 
-      # project.yml 位于仓库根目录
       - name: Generate Xcode project
         run: xcodegen
+
+      - name: Verify project
+        run: |
+          xcodebuild -version
+          head -3 FunAim.xcodeproj/project.pbxproj
 
       - name: Build (iOS Simulator, no signing)
         run: |
@@ -48,8 +56,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install XcodeGen
-        run: brew install xcodegen
+      - name: Install XcodeGen (pinned 2.43.0)
+        run: |
+          curl -LsS https://github.com/yonaskolb/XcodeGen/releases/download/2.43.0/xcodegen.zip -o xcodegen.zip
+          unzip -q xcodegen.zip -d xcodegen-tmp
+          echo "$PWD/xcodegen-tmp/xcodegen/bin" >> "$GITHUB_PATH"
 
       - name: Generate Xcode project
         run: xcodegen
