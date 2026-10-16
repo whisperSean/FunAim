@@ -113,7 +113,7 @@ yolo export model=yolo11n.pt format=coreml imgsz=640   # 生成 yolo11n.mlmodel
 ```
 
 1. 把 `yolo11n.mlmodel` 拖入 Xcode 工程，勾选 FunAim target；
-2. 重新运行：`PersonDetector` 发现 Bundle 内存在该模型即自动切换到 `VNCoreMLRequest`（ANE 加速），并自动完成 person 类别过滤、IoU NMS、scaleFit 预处理；
+2. 重新运行：`PersonDetector` 发现 Bundle 内存在该模型即自动切换到 `VNCoreMLRequest`（ANE 加速），并自动完成 person 类别过滤与 IoU NMS；
 3. 换其他模型只需改 `PersonDetector.coreMLModelName`（如 `yolov8n`）。
 
 备选来源：Hugging Face 上已转换好的 `yolov8n` CoreML 权重（搜 "yolov8n coreml"）；或 Google MediaPipe / TFLite SSD-MobileNet（需自接采集与渲染管线，改动更大，不推荐本项目场景）。

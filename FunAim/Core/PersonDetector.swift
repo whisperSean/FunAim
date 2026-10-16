@@ -29,9 +29,8 @@ final class PersonDetector {
     init() {
         if let modelURL = Self.locateCoreMLModel(),
            let vnModel = try? VNCoreMLModel(for: MLModel(contentsOf: modelURL)) {
-            let coreMLRequest = VNCoreMLRequest(model: vnModel)
-            coreMLRequest.cropAndScale = .scaleFit
-            request = coreMLRequest
+            // 默认 scaleFill 缩放即可：检测结果经 Vision 归一化映射回原始帧，下游管线无感
+            request = VNCoreMLRequest(model: vnModel)
             usesCoreML = true
         } else {
             let visionRequest = VNDetectHumanRectanglesRequest()
