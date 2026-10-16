@@ -44,14 +44,50 @@ FunAim/
 
 本项目为原生 iOS（Swift/SwiftUI + AVFoundation + Vision/CoreML），Apple 工具链硬限制：编译必须 macOS + Xcode，Windows 无法本地编译（swift.org 的 Windows 工具链不含 UIKit/SwiftUI；换 Flutter/RN 也绕不开 macOS 出包）。可行路径按成本排序：
 
-| 路径 | 成本 | 操作 |
+| 路径 | 成本 | 说明 |
 |---|---|---|
-| GitHub Actions 云编译 | 免费（公开仓库） | 仓库自带 `.github/workflows/ios-build.yml`：push 后自动 xcodegen + 模拟器编译，产出 .app 构件；**无需签名、无需 Mac，可立即验证工程能否编译通过** |
-| 云 Mac 按需租 | 约 $1–2/小时 | MacinCloud / MacStadium / AWS EC2 Mac 实例，远程桌面装 Xcode（App Store 免费），按上文方式构建 |
-| 云端出 IPA → Windows 侧载 | 同上 + 免费 Apple ID | 云 Mac 上导出未签名 IPA → Windows 上用 Sideloadly / AltServer + 数据线侧载到 iPhone（免费 Apple ID 签名 7 天有效，到期重签） |
+| **GitHub Actions 云构建（已配好，推荐）** | 免费（公开仓库） | push 自动编译 + 自动导出未签名 IPA，Actions 页面直接下载，无需 Mac、无需签名证书 |
+| 云 Mac 按需租 | 约 $1–2/小时 | MacinCloud / MacStadium / AWS EC2 Mac 实例，远程桌面装 Xcode（App Store 免费）本地构建 |
 | 二手 Mac mini | 一次性 | 长期开发最省心，M1 二手即可 |
 
-云 Mac 导出未签名 IPA（供 Windows 侧载）的命令：
+### 云端自动构建流水线（已配置）
+
+仓库自带 `.github/workflows/ios-build.yml`，运行记录：https://github.com/whisperSean/FunAim/actions
+
+**触发条件**：push 改动 `FunAim/**`、`project.yml`、`Info.plist` 或工作流自身；也可在 Actions 页面手动 `Run workflow`。
+
+**两个并行任务**（macOS runner，约 1 分钟跑完）：
+
+| 任务 | 内容 | 产物（Artifacts） |
+|---|---|---|
+| build | XcodeGen 生成工程 → 模拟器编译验证 | `FunAim-simulator-app` |
+| ipa | xcodebuild archive（免签名）→ Payload 打包 | **`FunAim-unsigned-ipa`**（保留 30 天） |
+
+**下载 IPA 的两种方式**：
+
+1. 网页：Actions → 点进绿色勾的运行 → 页面底部 **Artifacts** → 下载 `FunAim-unsigned-ipa`（需登录 GitHub，zip 解压得 `FunAim-unsigned.ipa`）；
+2. 命令行（本机已登录 gh CLI）：
+
+```bash
+gh run download -R whisperSean/FunAim -n FunAim-unsigned-ipa -D ./IPA成品
+# gh 自动解压，得到 FunAim-unsigned.ipa
+```
+
+**IPA 装机（Windows → iPhone）**：
+
+1. 电脑装 [Sideloadly](https://sideloadly.io)（免费）；
+2. USB 连接 iPhone → 拖入 `FunAim-unsigned.ipa` → 输入 Apple ID → Start；
+3. 手机上：设置 → 通用 → VPN 与设备管理 → 信任 Apple ID 开发者证书；
+4. 免费 Apple ID 签名 **7 天有效**，到期用 Sideloadly 重签一次；$99/年 Apple Developer Program 可长期签名 + TestFlight 分发。
+
+**流水线踩坑记录（已固化，勿回退）**：
+
+- XcodeGen 固定 2.43.0（GitHub Release 直装，不走 brew）：brew 最新版写出的工程格式，macos-14 runner 的 Xcode 15.4 读不了（报 `Unable to read project`）；
+- 推送 `.github/workflows/` 下改动需要令牌带 `workflow` scope：`gh auth login --scopes repo,workflow`（设备码浏览器授权）；
+- `CGImagePropertyOrientation` 的成员是 `.up/.down/.left/.right`，不是 `.top`；
+- 模拟器没有摄像头，云构建只能验证"可编译"，功能验证必须真机。
+
+### 云 Mac 手动出未签名 IPA（备选）
 
 ```bash
 xcodebuild archive -project FunAim.xcodeproj -scheme FunAim \
@@ -61,9 +97,8 @@ cd FunAim.xcarchive/Products/Applications
 mkdir Payload && cp -r FunAim.app Payload/ && zip -r FunAim.ipa Payload
 ```
 
-注意：
-- **真机运行必须签名**：免费 Apple ID（7 天）或 Apple Developer Program（$99/年，可长期 + TestFlight 分发）；
-- 模拟器没有摄像头，功能验证必须真机——云编译只能确认"能否编译通过"；
+通用注意：
+- **真机运行必须签名**：免费 Apple ID（7 天）或 Apple Developer Program（$99/年）；
 - 工程内代码对这些路径零适配成本（XcodeGen 工程 + 无第三方依赖）。
 
 ## 构建（需 Mac + Xcode 13+；Windows 无法编译 iOS 应用）
@@ -143,7 +178,7 @@ yolo export model=yolo11n.pt format=coreml imgsz=640   # 生成 yolo11n.mlmodel
 - 滚动响应液态玻璃导航栏：浮动圆角玻璃条 + 滚动后浮现发丝分隔线；
 - 五张 continuous 22pt 圆角玻璃卡片（检测模型/自动瞄准/显示样式/运行状态/恢复默认）；
 - 瞄准子选项关闭时以透明度 + 禁用方式收起，卡片高度稳定，过渡平滑；
-- 色板选中弹性缩放 + 对勾标记；全部控件绑定关系与旧版一致。
+- 色板选中弹性缩放 + 选中环标记（克制风格，无对勾装饰）；全部控件绑定关系与旧版一致。
 
 ### 动效与色彩规范
 - 全局动效令牌 `Motion`：标准 spring 0.38/0.82、快速 spring 0.28/0.72、灵动岛 0.45/0.78，无生硬线性过渡；
