@@ -43,6 +43,8 @@ final class AppSettings: ObservableObject {
     @Published var detectionMode: DetectionMode { didSet { d.set(detectionMode.rawValue, forKey: "fa.detectionMode") } }
     /// 最低置信度阈值：越低越灵敏
     @Published var minConfidence: Double { didSet { d.set(minConfidence, forKey: "fa.minConfidence") } }
+    /// 识别全部类别（车/猫狗等），默认关闭仅识别人物
+    @Published var showAllClasses: Bool { didSet { d.set(showAllClasses, forKey: "fa.showAllClasses") } }
 
     // 自动瞄准
     @Published var aimEnabled: Bool { didSet { d.set(aimEnabled, forKey: "fa.aimEnabled") } }
@@ -64,6 +66,7 @@ final class AppSettings: ObservableObject {
     private init() {
         detectionMode = DetectionMode(rawValue: d.string(forKey: "fa.detectionMode") ?? "") ?? .balanced
         minConfidence = d.object(forKey: "fa.minConfidence") as? Double ?? 0.5
+        showAllClasses = d.object(forKey: "fa.showAllClasses") as? Bool ?? false
         aimEnabled = d.object(forKey: "fa.aimEnabled") as? Bool ?? true
         aimTracking = d.object(forKey: "fa.aimTracking") as? Double ?? 0.35
         lockStrength = d.object(forKey: "fa.lockStrength") as? Double ?? 0.6
@@ -80,6 +83,7 @@ final class AppSettings: ObservableObject {
     func resetToDefaults() {
         detectionMode = .balanced
         minConfidence = 0.5
+        showAllClasses = false
         aimEnabled = true
         aimTracking = 0.35
         lockStrength = 0.6

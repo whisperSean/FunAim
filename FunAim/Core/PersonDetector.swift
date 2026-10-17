@@ -3,17 +3,18 @@ import CoreVideo
 import Foundation
 import Vision
 
-/// 单个人物检测结果
-/// box 为归一化坐标（原点左下，与 Vision 一致）
+/// 单个人物/目标检测结果
+/// box 为归一化坐标（原点左下，与 Vision 一致）；label 为类别名（person/car/dog...）
 struct DetectedPerson {
     let id: UUID
     let box: CGRect
     let confidence: Float
+    let label: String
 }
 
 /// 人物检测器：统一使用 CI 打包的 YOLO11n CoreML 模型
-/// 单一可靠路径：仅识别人物（person 类），VNCoreMLRequest 自动调度 ANE/GPU，
-/// 本地完成置信度过滤 + 越界收敛 + IoU NMS，输出归一化框供下游管线使用
+/// 单一可靠路径：默认仅识别人物（person 类），可在设置中开启"识别全部类别"；
+/// VNCoreMLRequest 自动调度 ANE/GPU，本地完成置信度过滤 + 越界收敛 + IoU NMS
 final class PersonDetector {
 
     static let coreMLModelName = "yolo11n"
@@ -62,12 +63,17 @@ final class PersonDetector {
             }
             let costMs = (CFAbsoluteTimeGetCurrent() - t0) * 1000
 
-            // 仅保留 person 类，再做置信度过滤与越界收敛
+            // 类别筛选：默认仅 person；设置开启后识别全部类别
+            // （每帧直读设置中心，切换即时生效）
+            let showAll = AppSettings.shared.showAllClasses
             let observations = (request.results as? [VNRecognizedObjectObservation]) ?? []
             let raw = observations
-                .filter { $0.labels.contains { $0.identifier.lowercased().contains("person") } }
+                .filter { observation in
+                    if showAll { return true }
+                    return observation.labels.contains { $0.identifier.lowercased().contains("person") }
+                }
                 .filter { $0.confidence >= minConfidence }
-                .map { (box: $0.boundingBox, conf: $0.confidence) }
+                .map { (box: $0.boundingBox, conf: $0.confidence, label: $0.labels.first?.identifier ?? "object") }
                 .compactMap(Self.clamp)
             let filtered = Self.nms(raw, iouThreshold: 0.45)
 
@@ -93,16 +99,16 @@ final class PersonDetector {
     }
 
     /// 模型偶发输出越界框：收敛到画面内并剔除无效框
-    private static func clamp(_ detection: (box: CGRect, conf: Float)) -> (box: CGRect, conf: Float)? {
+    private static func clamp(_ detection: (box: CGRect, conf: Float, label: String)) -> (box: CGRect, conf: Float, label: String)? {
         let clamped = detection.box.intersection(CGRect(x: 0, y: 0, width: 1, height: 1))
         guard !clamped.isNull, clamped.width > 0.01, clamped.height > 0.01 else { return nil }
-        return (box: clamped, conf: detection.conf)
+        return (box: clamped, conf: detection.conf, label: detection.label)
     }
 
     /// IoU 非极大值抑制
-    private static func nms(_ input: [(box: CGRect, conf: Float)], iouThreshold: Float) -> [(box: CGRect, conf: Float)] {
+    private static func nms(_ input: [(box: CGRect, conf: Float, label: String)], iouThreshold: Float) -> [(box: CGRect, conf: Float, label: String)] {
         let sorted = input.sorted { $0.conf > $1.conf }
-        var keep: [(box: CGRect, conf: Float)] = []
+        var keep: [(box: CGRect, conf: Float, label: String)] = []
         for candidate in sorted where keep.allSatisfy({ iou($0.box, candidate.box) < iouThreshold }) {
             keep.append(candidate)
         }
@@ -128,6 +134,7 @@ final class PersonTracker {
         var rect: CGRect
         var velocity: CGSize
         var confidence: Float
+        var label: String
         var misses: Int
     }
 
@@ -141,7 +148,7 @@ final class PersonTracker {
     /// 遮挡滑行帧数（推理帧）：期间按速度外推输出，保持锁定稳定
     private let maxCoastMisses = 2
 
-    func assign(_ detections: [(box: CGRect, conf: Float)]) -> [DetectedPerson] {
+    func assign(_ detections: [(box: CGRect, conf: Float, label: String)]) -> [DetectedPerson] {
         // 1) 线性速度外推：补偿推理间隔内的位移
         for index in tracks.indices {
             tracks[index].rect = tracks[index].rect.offsetBy(dx: tracks[index].velocity.width,
@@ -181,7 +188,8 @@ final class PersonTracker {
                 trackMatched[bestIndex] = true
                 result.append(merge(index: bestIndex, detection))
             } else {
-                result.append(DetectedPerson(id: UUID(), box: detection.box, confidence: detection.conf))
+                result.append(DetectedPerson(id: UUID(), box: detection.box,
+                                             confidence: detection.conf, label: detection.label))
             }
         }
 
@@ -192,7 +200,8 @@ final class PersonTracker {
             if coasted.misses <= maxCoastMisses {
                 coasted.confidence *= 0.8
                 tracks[tIndex] = coasted
-                result.append(DetectedPerson(id: coasted.id, box: coasted.rect, confidence: coasted.confidence))
+                result.append(DetectedPerson(id: coasted.id, box: coasted.rect,
+                                             confidence: coasted.confidence, label: coasted.label))
             }
         }
 
@@ -202,13 +211,13 @@ final class PersonTracker {
                 return tracks[index]
             }
             return Track(id: person.id, rect: person.box, velocity: .zero,
-                         confidence: person.confidence, misses: 0)
+                         confidence: person.confidence, label: person.label, misses: 0)
         }
         return result
     }
 
     /// EMA 更新 + 速度估计
-    private func merge(index: Int, _ detection: (box: CGRect, conf: Float)) -> DetectedPerson {
+    private func merge(index: Int, _ detection: (box: CGRect, conf: Float, label: String)) -> DetectedPerson {
         var track = tracks[index]
         let previousCenter = CGPoint(x: track.rect.midX, y: track.rect.midY)
         let box = CGRect(
@@ -224,9 +233,10 @@ final class PersonTracker {
                                 height: track.velocity.height * 0.5 + residual.height * 0.5)
         track.rect = box
         track.confidence = detection.conf
+        track.label = detection.label
         track.misses = 0
         tracks[index] = track
-        return DetectedPerson(id: track.id, box: box, confidence: detection.conf)
+        return DetectedPerson(id: track.id, box: box, confidence: detection.conf, label: detection.label)
     }
 
     private static func iou(_ a: CGRect, _ b: CGRect) -> CGFloat {

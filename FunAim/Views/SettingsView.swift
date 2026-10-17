@@ -95,6 +95,10 @@ struct SettingsView: View {
                 .labelsHidden()
             }
 
+            // 类别筛选：默认仅识别人物
+            Toggle("识别全部类别（车/猫狗等）", isOn: $settings.showAllClasses)
+                .font(.subheadline.weight(.medium))
+
             VStack(alignment: .leading, spacing: 4) {
                 HStack {
                     Text("识别灵敏度").rowTitle()
@@ -105,7 +109,7 @@ struct SettingsView: View {
                 Slider(value: $settings.minConfidence, in: 0.05...0.9)
             }
 
-            Text("流畅每 3 帧推理一次最省电，精准逐帧推理最连贯；调高灵敏度可检出更远、更模糊的人物，但误检会增加。全部推理均在设备本地完成。")
+            Text("流畅每 3 帧推理一次最省电，精准逐帧推理最连贯；调高灵敏度可检出更远、更模糊的目标，但误检会增加。默认仅识别人物，开启「识别全部类别」后显示车、猫狗等所有类别并带类别标签。全部推理均在设备本地完成。")
                 .font(.caption2)
                 .foregroundColor(.secondary)
         }

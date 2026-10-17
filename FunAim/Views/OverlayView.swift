@@ -82,9 +82,18 @@ struct OverlayView: View {
     }
 
     private func drawConfidence(_ context: inout GraphicsContext, person: MappedPerson) {
-        let text = Text("\(Int(person.person.confidence * 100))%")
-            .font(.system(size: 11, weight: .bold))
-            .foregroundColor(.white)
+        let label = person.person.label
+        let isPerson = label.lowercased() == "person"
+        let text: Text
+        if settings.showAllClasses && !isPerson {
+            text = Text("\(label) \(Int(person.person.confidence * 100))%")
+                .font(.system(size: 11, weight: .bold))
+                .foregroundColor(.white)
+        } else {
+            text = Text("\(Int(person.person.confidence * 100))%")
+                .font(.system(size: 11, weight: .bold))
+                .foregroundColor(.white)
+        }
         let resolved = context.resolve(text)
         let textSize = resolved.measure(in: CGSize(width: 100, height: 20))
         let centerY = max(person.viewRect.minY - 11, 12)
