@@ -65,7 +65,7 @@ final class AppSettings: ObservableObject {
 
     private init() {
         detectionMode = DetectionMode(rawValue: d.string(forKey: "fa.detectionMode") ?? "") ?? .balanced
-        minConfidence = d.object(forKey: "fa.minConfidence") as? Double ?? 0.5
+        minConfidence = d.object(forKey: "fa.minConfidence") as? Double ?? 0.55
         showAllClasses = d.object(forKey: "fa.showAllClasses") as? Bool ?? false
         aimEnabled = d.object(forKey: "fa.aimEnabled") as? Bool ?? true
         aimTracking = d.object(forKey: "fa.aimTracking") as? Double ?? 0.35
@@ -82,7 +82,7 @@ final class AppSettings: ObservableObject {
 
     func resetToDefaults() {
         detectionMode = .balanced
-        minConfidence = 0.5
+        minConfidence = 0.55
         showAllClasses = false
         aimEnabled = true
         aimTracking = 0.35

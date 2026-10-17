@@ -98,10 +98,11 @@ final class PersonDetector {
         return nil
     }
 
-    /// 模型偶发输出越界框：收敛到画面内并剔除无效框
+    /// 模型偶发输出越界/过小框：收敛到画面内并剔除无效框
     private static func clamp(_ detection: (box: CGRect, conf: Float, label: String)) -> (box: CGRect, conf: Float, label: String)? {
         let clamped = detection.box.intersection(CGRect(x: 0, y: 0, width: 1, height: 1))
-        guard !clamped.isNull, clamped.width > 0.01, clamped.height > 0.01 else { return nil }
+        // 过小的框多为远处误检，直接丢弃
+        guard !clamped.isNull, clamped.width > 0.03, clamped.height > 0.03 else { return nil }
         return (box: clamped, conf: detection.conf, label: detection.label)
     }
 
@@ -145,8 +146,8 @@ final class PersonTracker {
     private let matchThreshold: CGFloat = 0.14
     /// IoU 匹配阈值
     private let iouMatchThreshold: CGFloat = 0.25
-    /// 遮挡滑行帧数（推理帧）：期间按速度外推输出，保持锁定稳定
-    private let maxCoastMisses = 2
+    /// 遮挡滑行帧数（推理帧）：仅保留 1 帧，尽量不渲染"幽灵框"
+    private let maxCoastMisses = 1
 
     func assign(_ detections: [(box: CGRect, conf: Float, label: String)]) -> [DetectedPerson] {
         // 1) 线性速度外推：补偿推理间隔内的位移
