@@ -11,38 +11,30 @@ struct DetectedPerson {
     let confidence: Float
 }
 
-/// 人物检测器
-/// - 默认：Apple Vision 内置人体检测（零依赖，所有设备可用）
-/// - 可选：Bundle 内捆绑开源模型（如 Ultralytics YOLO11n 导出的 CoreML，资源名 yolo11n）
-///   时自动切换 VNCoreMLRequest（ANE 加速），内置 person 类别过滤 + IoU NMS
-/// 两条路径输出统一归一化框，下游（坐标映射/瞄准/绘制）完全无感
+/// 人物检测器：统一使用 CI 打包的 YOLO11n CoreML 模型
+/// 单一可靠路径：仅识别人物（person 类），VNCoreMLRequest 自动调度 ANE/GPU，
+/// 本地完成置信度过滤 + 越界收敛 + IoU NMS，输出归一化框供下游管线使用
 final class PersonDetector {
 
-    /// 可选开源模型资源名（存在 .mlmodelc / .mlmodel 时启用）
     static let coreMLModelName = "yolo11n"
 
-    private let request: VNRequest
-    private let usesCoreML: Bool
+    private let request: VNCoreMLRequest?
     private let queue = DispatchQueue(label: "funaim.inference", qos: .userInteractive)
     private var tracker = PersonTracker()
 
     init() {
-        if let modelURL = Self.locateCoreMLModel(),
-           let vnModel = try? VNCoreMLModel(for: MLModel(contentsOf: modelURL)) {
-            // 默认 scaleFill 缩放即可：检测结果经 Vision 归一化映射回原始帧，下游管线无感
-            request = VNCoreMLRequest(model: vnModel)
-            usesCoreML = true
-        } else {
-            let visionRequest = VNDetectHumanRectanglesRequest()
-            visionRequest.upperBodyOnly = false   // 全身 + 半身均检出
-            request = visionRequest
-            usesCoreML = false
+        guard let modelURL = Self.locateCoreMLModel(),
+              let vnModel = try? VNCoreMLModel(for: MLModel(contentsOf: modelURL)) else {
+            request = nil
+            return
         }
+        request = VNCoreMLRequest(model: vnModel)
     }
 
     /// 推理预热：消除首次 perform 的冷启动开销（会话启动时调用一次）
     func warmup() {
         queue.async { [request] in
+            guard let request else { return }
             var pixelBuffer: CVPixelBuffer?
             CVPixelBufferCreate(kCFAllocatorDefault, 64, 64, kCVPixelFormatType_32BGRA, nil, &pixelBuffer)
             guard let pb = pixelBuffer else { return }
@@ -55,6 +47,10 @@ final class PersonDetector {
     func detect(pixelBuffer: CVPixelBuffer,
                 minConfidence: Float,
                 completion: @escaping ([DetectedPerson], Double) -> Void) {
+        guard let request else {
+            DispatchQueue.main.async { completion([], 0) }
+            return
+        }
         queue.async { [request, weak self] in
             let handler = VNImageRequestHandler(cvPixelBuffer: pixelBuffer, orientation: .up, options: [:])
             let t0 = CFAbsoluteTimeGetCurrent()
@@ -66,14 +62,16 @@ final class PersonDetector {
             }
             let costMs = (CFAbsoluteTimeGetCurrent() - t0) * 1000
 
-            var raw = Self.parse(request: request, usesCoreML: self?.usesCoreML ?? false)
-                .filter { $0.conf >= minConfidence }
+            // 仅保留 person 类，再做置信度过滤与越界收敛
+            let observations = (request.results as? [VNRecognizedObjectObservation]) ?? []
+            let raw = observations
+                .filter { $0.labels.contains { $0.identifier.lowercased().contains("person") } }
+                .filter { $0.confidence >= minConfidence }
+                .map { (box: $0.boundingBox, conf: $0.confidence) }
                 .compactMap(Self.clamp)
-            if self?.usesCoreML == true {
-                raw = Self.nms(raw, iouThreshold: 0.45)
-            }
+            let filtered = Self.nms(raw, iouThreshold: 0.45)
 
-            let persons = self?.tracker.assign(raw) ?? []
+            let persons = self?.tracker.assign(filtered) ?? []
             DispatchQueue.main.async { completion(persons, costMs) }
         }
     }
@@ -94,31 +92,14 @@ final class PersonDetector {
         return nil
     }
 
-    // MARK: - 结果解析
-
-    private static func parse(request: VNRequest, usesCoreML: Bool) -> [(box: CGRect, conf: Float)] {
-        if usesCoreML {
-            // YOLO 类模型：VNRecognizedObjectObservation，按类别名过滤
-            let observations = (request.results as? [VNRecognizedObjectObservation]) ?? []
-            return observations
-                .filter { observation in
-                    observation.labels.contains { $0.identifier.lowercased().contains("person") }
-                }
-                .map { (box: $0.boundingBox, conf: $0.confidence) }
-        }
-        // Vision 内置路径：VNHumanObservation
-        let observations = (request.results as? [VNHumanObservation]) ?? []
-        return observations.map { (box: $0.boundingBox, conf: $0.confidence) }
-    }
-
-    /// Vision / 模型偶发输出越界框：收敛到画面内并剔除无效框
+    /// 模型偶发输出越界框：收敛到画面内并剔除无效框
     private static func clamp(_ detection: (box: CGRect, conf: Float)) -> (box: CGRect, conf: Float)? {
         let clamped = detection.box.intersection(CGRect(x: 0, y: 0, width: 1, height: 1))
         guard !clamped.isNull, clamped.width > 0.01, clamped.height > 0.01 else { return nil }
         return (box: clamped, conf: detection.conf)
     }
 
-    /// IoU 非极大值抑制（模型未内置 NMS 时兜底）
+    /// IoU 非极大值抑制
     private static func nms(_ input: [(box: CGRect, conf: Float)], iouThreshold: Float) -> [(box: CGRect, conf: Float)] {
         let sorted = input.sorted { $0.conf > $1.conf }
         var keep: [(box: CGRect, conf: Float)] = []

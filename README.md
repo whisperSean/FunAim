@@ -134,9 +134,11 @@ open FunAim.xcodeproj
 - 瞄准准星采用指数平滑 + 30Hz 更新 + Canvas 线性补间动画，视觉上保持 60fps 连贯；
 - 画面坐标通过等比填充逆映射（CoordinateMapper）与检测框严格对齐，无偏移。
 
-## 接入开源检测模型（可选）
+## 检测引擎（YOLO11n · 单一路径）
 
-默认使用 Apple Vision 内置人体检测（零依赖、开箱即用）。工程已内置开源模型对接层：**模型文件拖进工程即自动启用，删除即自动回退 Vision**，下游管线（坐标映射/瞄准/绘制）零改动。
+统一使用 CI 自动导出打包的 **YOLO11n CoreML 模型**：仅识别人物（person 类过滤 + IoU NMS），
+VNCoreMLRequest 自动调度 ANE/GPU；模型导出失败会直接导致构建失败（不做降级兜底，保证路径唯一可靠）。
+模型缺失时检测返回空结果。
 
 ### YOLO11n（推荐，Ultralytics 官方 CoreML 导出）
 
@@ -190,7 +192,7 @@ yolo export model=yolo11n.pt format=coreml imgsz=640   # 生成 yolo11n.mlmodel
 
 ## v2 横屏 ESP 演示模式
 
-- **仅横屏**（LandscapeLeft/Right，默认横屏打开）：采集帧旋转角跟随设备姿态（landscapeRight=0 / landscapeLeft=180，iOS 17+ 走 `videoRotationAngle`），Vision 始终按直立帧推理，坐标映射自适应；
+- **仅横屏**（LandscapeLeft/Right，默认横屏打开）：采集帧旋转角跟随设备姿态（landscapeLeft=0 / landscapeRight=180，实测校准，iOS 17+ 走 `videoRotationAngle`），Vision 始终按直立帧推理，坐标映射自适应；
 - **ESP 标准视觉**：顶部居中射线（origin = 屏幕顶端中点）射向全部已识别目标，锁定目标辉光高亮 + 绿色端点；准星瞄准线保留（实线/虚线/箭头三种样式）；
 - **方框样式可调**：粗细（1–8pt）/ 颜色（白/绿/蓝/橙/红）/ 透明度（20%–100%）+ 角框/全框两种形态；
 - **灵动岛设置菜单**：顶部胶囊常驻可点，点击以灵动岛同款弹簧曲线展开设置面板（scale 0.12→1 + 淡入，收起反向动画，类似 iOS 应用开合的观感）；胶囊展开态显示"功能设置 · 点击收起"；

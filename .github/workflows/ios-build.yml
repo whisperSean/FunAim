@@ -62,7 +62,7 @@ jobs:
           unzip -q xcodegen.zip -d xcodegen-tmp
           echo "$PWD/xcodegen-tmp/xcodegen/bin" >> "$GITHUB_PATH"
 
-      # 自动导出 YOLO11n CoreML 并打包进 IPA（失败不影响构建，自动回退 Vision）
+      # 自动导出 YOLO11n CoreML 并打包进 IPA（导出失败 = 构建失败，保证单一可靠检测路径）
       - name: Cache pip (YOLO export)
         uses: actions/cache@v4
         with:
@@ -76,7 +76,6 @@ jobs:
           python-version: '3.11'
 
       - name: Export YOLO11n CoreML
-        continue-on-error: true
         run: |
           python3 -m venv venv
           ./venv/bin/pip install --quiet --upgrade pip
@@ -91,7 +90,8 @@ jobs:
             mv yolo11n.mlpackage FunAim/Resources/yolo11n.mlpackage
             echo "YOLO model bundled (mlpackage)"
           else
-            echo "WARN: model export failed, falling back to Vision"
+            echo "::error::YOLO model export failed"
+            exit 1
           fi
 
       - name: Generate Xcode project

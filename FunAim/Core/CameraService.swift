@@ -223,12 +223,12 @@ final class CameraService: NSObject, ObservableObject {
 
 // MARK: - 旋转角映射
 
-/// 设备姿态 → 数据管线旋转角（Apple 官方映射：portrait=90 / 270，landscapeLeft=180 / landscapeRight=0）
+/// 设备姿态 → 数据管线旋转角（实测校准：landscapeLeft=0 / landscapeRight=180）
 enum CameraRotation {
     static func angle(for deviceOrientation: UIDeviceOrientation) -> CGFloat? {
         switch deviceOrientation {
-        case .landscapeLeft:  return 180
-        case .landscapeRight: return 0
+        case .landscapeLeft:  return 0
+        case .landscapeRight: return 180
         default: return nil   // faceUp/faceDown/unknown 保持上一角度
         }
     }
