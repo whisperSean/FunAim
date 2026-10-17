@@ -69,13 +69,18 @@ jobs:
           path: ~/Library/Caches/pip
           key: pip-yolo-${{ runner.os }}
 
+      # Python 3.14 上 torch.jit/coremltools 全崩，必须钉 3.11
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
       - name: Export YOLO11n CoreML
         continue-on-error: true
         run: |
-          # runner 的 Python 受 Homebrew 管理，必须用 venv 安装
           python3 -m venv venv
           ./venv/bin/pip install --quiet --upgrade pip
-          ./venv/bin/pip install --quiet ultralytics coremltools
+          ./venv/bin/pip install --quiet ultralytics coremltools "numpy<2"
           ./venv/bin/python -c "from ultralytics import YOLO; YOLO('yolo11n.pt').export(format='coreml', imgsz=640, nms=True)"
           if [ -f yolo11n.mlmodel ]; then
             mkdir -p FunAim/Resources
