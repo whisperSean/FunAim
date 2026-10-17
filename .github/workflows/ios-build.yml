@@ -80,7 +80,8 @@ jobs:
           python3 -m venv venv
           ./venv/bin/pip install --quiet --upgrade pip
           ./venv/bin/pip install --quiet ultralytics coremltools "numpy<2"
-          ./venv/bin/python -c "from ultralytics import YOLO; YOLO('yolo11n.pt').export(format='coreml', imgsz=640, nms=True)"
+          # 不带 NMS 管线：导出原始 [1,84,8400] 张量，由 App 端自行解码（person 类别硬过滤）
+          ./venv/bin/python -c "from ultralytics import YOLO; YOLO('yolo11n.pt').export(format='coreml', imgsz=640, nms=False)"
           if [ -f yolo11n.mlmodel ]; then
             mkdir -p FunAim/Resources
             mv yolo11n.mlmodel FunAim/Resources/yolo11n.mlmodel

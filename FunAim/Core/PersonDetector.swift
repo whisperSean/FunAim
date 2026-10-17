@@ -1,10 +1,9 @@
 import CoreML
 import CoreVideo
 import Foundation
-import Vision
 
-/// 单个人物/目标检测结果
-/// box 为归一化坐标（原点左下，与 Vision 一致）；label 为类别名（person/car/dog...）
+/// 单个检测结果
+/// box 为归一化坐标（原点左下）；label 为类别名
 struct DetectedPerson {
     let id: UUID
     let box: CGRect
@@ -12,35 +11,63 @@ struct DetectedPerson {
     let label: String
 }
 
-/// 人物检测器：统一使用 CI 打包的 YOLO11n CoreML 模型
-/// 单一可靠路径：默认仅识别人物（person 类），可在设置中开启"识别全部类别"；
-/// VNCoreMLRequest 自动调度 ANE/GPU，本地完成置信度过滤 + 越界收敛 + IoU NMS
+/// 人物检测器：直读 YOLO11n CoreML 原始输出张量
+/// 不经过 Vision 的 NMS 管线/标签解释（该路径类别映射不可靠），
+/// 在张量层面只取 class 0（COCO 中 person 恒为 0 号类）——
+/// 非人物类别在解码层即被排除，不存在误画可能。
+/// 本地完成置信度过滤 + 越界收敛 + IoU NMS，输出归一化框。
 final class PersonDetector {
 
     static let coreMLModelName = "yolo11n"
 
-    private let request: VNCoreMLRequest?
+    /// COCO 80 类标签（class 0 = person）
+    private static let cocoLabels: [String] = [
+        "person", "bicycle", "car", "motorcycle", "airplane", "bus", "train", "truck", "boat",
+        "traffic light", "fire hydrant", "stop sign", "parking meter", "bench", "bird", "cat", "dog",
+        "horse", "sheep", "cow", "elephant", "bear", "zebra", "giraffe", "backpack", "umbrella",
+        "handbag", "tie", "suitcase", "frisbee", "skis", "snowboard", "sports ball", "kite",
+        "baseball bat", "baseball glove", "skateboard", "surfboard", "tennis racket", "bottle",
+        "wine glass", "cup", "fork", "knife", "spoon", "bowl", "banana", "apple", "sandwich",
+        "orange", "broccoli", "carrot", "hot dog", "pizza", "donut", "cake", "chair", "couch",
+        "potted plant", "bed", "dining table", "toilet", "tv", "laptop", "mouse", "remote",
+        "keyboard", "cell phone", "microwave", "oven", "toaster", "sink", "refrigerator", "book",
+        "clock", "vase", "scissors", "teddy bear", "hair drier", "toothbrush"
+    ]
+    private static let personClassIndex = 0
+    /// person 类硬性置信度下限：低置信度误检直接丢弃
+    private static let personFloor: Float = 0.6
+    private static let inputSize: Float = 640
+
+    private var model: MLModel?
+    private var inputName = "image"
+    private var outputName: String?
     private let queue = DispatchQueue(label: "funaim.inference", qos: .userInteractive)
     private var tracker = PersonTracker()
 
     init() {
-        guard let modelURL = Self.locateCoreMLModel(),
-              let vnModel = try? VNCoreMLModel(for: MLModel(contentsOf: modelURL)) else {
-            request = nil
-            return
-        }
-        request = VNCoreMLRequest(model: vnModel)
+        guard let url = Self.locateCoreMLModel() else { return }
+        let config = MLModelConfiguration()
+        config.computeUnits = .all   // ANE / GPU / CPU 自动调度
+        guard let loaded = try? MLModel(contentsOf: url, configuration: config) else { return }
+        model = loaded
+        inputName = loaded.modelDescription.inputDescriptionsByName.first?.key ?? "image"
+        outputName = loaded.modelDescription.outputDescriptionsByName
+            .first { $0.value.type == .multiArray }?.key
     }
 
-    /// 推理预热：消除首次 perform 的冷启动开销（会话启动时调用一次）
+    /// 推理预热：消除首次 prediction 的冷启动开销（会话启动时调用一次）
     func warmup() {
-        queue.async { [request] in
-            guard let request else { return }
-            var pixelBuffer: CVPixelBuffer?
-            CVPixelBufferCreate(kCFAllocatorDefault, 64, 64, kCVPixelFormatType_32BGRA, nil, &pixelBuffer)
-            guard let pb = pixelBuffer else { return }
-            let handler = VNImageRequestHandler(cvPixelBuffer: pb, orientation: .up, options: [:])
-            try? handler.perform([request])
+        queue.async { [weak self] in
+            guard let self, let model = self.model else { return }
+            var pb: CVPixelBuffer?
+            let attrs: [CFString: Any] = [kCVPixelBufferWidthKey: Int(Self.inputSize),
+                                          kCVPixelBufferHeightKey: Int(Self.inputSize)]
+            CVPixelBufferCreate(kCFAllocatorDefault, Int(Self.inputSize), Int(Self.inputSize),
+                                kCVPixelFormatType_32BGRA, attrs as CFDictionary, &pb)
+            guard let buffer = pb else { return }
+            if let input = try? Self.featureProvider(buffer, inputName: self.inputName) {
+                _ = try? model.prediction(from: input)
+            }
         }
     }
 
@@ -48,44 +75,108 @@ final class PersonDetector {
     func detect(pixelBuffer: CVPixelBuffer,
                 minConfidence: Float,
                 completion: @escaping ([DetectedPerson], Double) -> Void) {
-        guard let request else {
+        guard let model, let outputName else {
             DispatchQueue.main.async { completion([], 0) }
             return
         }
-        queue.async { [request, weak self] in
-            let handler = VNImageRequestHandler(cvPixelBuffer: pixelBuffer, orientation: .up, options: [:])
+        queue.async { [weak self] in
+            guard let self else { return }
             let t0 = CFAbsoluteTimeGetCurrent()
             do {
-                try handler.perform([request])
+                let input = try Self.featureProvider(pixelBuffer, inputName: self.inputName)
+                let output = try model.prediction(from: input)
+                guard let multiArray = output.featureValue(for: outputName)?.multiArrayValue else {
+                    DispatchQueue.main.async { completion([], 0) }
+                    return
+                }
+                let costMs = (CFAbsoluteTimeGetCurrent() - t0) * 1000
+
+                // 张量解码 + 类别过滤（每帧直读设置中心，切换即时生效）
+                let showAll = AppSettings.shared.showAllClasses
+                let raw = Self.decode(multiArray, showAll: showAll, minConfidence: minConfidence)
+                let filtered = Self.nms(raw, iouThreshold: 0.45)
+
+                let persons = self.tracker.assign(filtered)
+                DispatchQueue.main.async { completion(persons, costMs) }
             } catch {
                 DispatchQueue.main.async { completion([], 0) }
-                return
             }
-            let costMs = (CFAbsoluteTimeGetCurrent() - t0) * 1000
-
-            // 类别与置信度筛选：默认仅 person 且带硬性下限（防误检）；
-            // 设置开启"识别全部类别"后显示所有类别（每帧直读设置中心，切换即时生效）
-            let showAll = AppSettings.shared.showAllClasses
-            let personFloor: Float = 0.6
-            let observations = (request.results as? [VNRecognizedObjectObservation]) ?? []
-            let raw = observations
-                .filter { observation in
-                    let isPerson = observation.labels.contains { $0.identifier.lowercased().contains("person") }
-                    if isPerson {
-                        return observation.confidence >= max(minConfidence, personFloor)
-                    }
-                    return showAll && observation.confidence >= minConfidence
-                }
-                .map { (box: $0.boundingBox, conf: $0.confidence, label: $0.labels.first?.identifier ?? "object") }
-                .compactMap(Self.clamp)
-            let filtered = Self.nms(raw, iouThreshold: 0.45)
-
-            let persons = self?.tracker.assign(filtered) ?? []
-            DispatchQueue.main.async { completion(persons, costMs) }
         }
     }
 
-    // MARK: - 模型加载
+    // MARK: - 原始张量解码
+
+    /// YOLO 输出 [1, 84, 8400]（4 框 + 80 类）或转置 [1, 8400, 84]
+    /// 每个候选：cx, cy, w, h（模型输入像素坐标）+ 80 个类别分数
+    private static func decode(_ mla: MLMultiArray, showAll: Bool, minConfidence: Float) -> [(box: CGRect, conf: Float, label: String)] {
+        let shape = mla.shape.map { $0.intValue }
+        guard shape.count == 3 else { return [] }
+
+        let channels: Int
+        let count: Int
+        let channelStride: Int
+        let indexStride: Int
+        if shape[1] <= shape[2] {
+            channels = shape[1]; count = shape[2]
+            channelStride = mla.strides[1].intValue; indexStride = mla.strides[2].intValue
+        } else {
+            channels = shape[2]; count = shape[1]
+            channelStride = mla.strides[2].intValue; indexStride = mla.strides[1].intValue
+        }
+        let labelCount = channels - 4
+        guard labelCount > personClassIndex else { return [] }
+
+        var result: [(box: CGRect, conf: Float, label: String)] = []
+        for i in 0..<count {
+            let base = i * indexStride
+
+            if !showAll {
+                // 仅 person：只读一个通道，快速跳过非人物候选
+                let score = mla[base + personClassIndex * channelStride + 4 * channelStride].floatValue
+                guard score >= max(minConfidence, personFloor) else { continue }
+                let cx = mla[base].doubleValue
+                let cy = mla[base + channelStride].doubleValue
+                let w = mla[base + 2 * channelStride].doubleValue
+                let h = mla[base + 3 * channelStride].doubleValue
+                appendBox(cx, cy, w, h, score, personClassIndex, &result)
+                continue
+            }
+
+            // 全类别：找最高分类别
+            var bestClass = -1
+            var bestScore = Float(0)
+            for c in 0..<labelCount {
+                let s = mla[base + (4 + c) * channelStride].floatValue
+                if s > bestScore { bestScore = s; bestClass = c }
+            }
+            guard bestClass >= 0 else { continue }
+            let isPerson = bestClass == personClassIndex
+            let threshold: Float = isPerson ? max(minConfidence, personFloor) : minConfidence
+            guard bestScore >= threshold else { continue }
+            let cx = mla[base].doubleValue
+            let cy = mla[base + channelStride].doubleValue
+            let w = mla[base + 2 * channelStride].doubleValue
+            let h = mla[base + 3 * channelStride].doubleValue
+            appendBox(cx, cy, w, h, bestScore, bestClass, &result)
+        }
+        return result
+    }
+
+    private static func appendBox(_ cx: Double, _ cy: Double, _ w: Double, _ h: Double,
+                                  _ score: Float, _ classIndex: Int,
+                                  _ result: inout [(box: CGRect, conf: Float, label: String)]) {
+        let box = CGRect(x: (cx - w / 2) / Double(inputSize),
+                         y: (cy - h / 2) / Double(inputSize),
+                         width: w / Double(inputSize),
+                         height: h / Double(inputSize))
+        result.append((box: box, conf: score, label: cocoLabels[classIndex]))
+    }
+
+    // MARK: - 输入构造 / 模型加载
+
+    private static func featureProvider(_ pixelBuffer: CVPixelBuffer, inputName: String) throws -> MLFeatureProvider {
+        try MLDictionaryFeatureProvider(dictionary: [inputName: MLFeatureValue(pixelBuffer: pixelBuffer)])
+    }
 
     private static func locateCoreMLModel() -> URL? {
         let name = coreMLModelName
@@ -101,10 +192,9 @@ final class PersonDetector {
         return nil
     }
 
-    /// 模型偶发输出越界/过小框：收敛到画面内并剔除无效框
+    /// 越界/过小框：收敛到画面内并剔除无效框
     private static func clamp(_ detection: (box: CGRect, conf: Float, label: String)) -> (box: CGRect, conf: Float, label: String)? {
         let clamped = detection.box.intersection(CGRect(x: 0, y: 0, width: 1, height: 1))
-        // 过小的框多为远处误检，直接丢弃
         guard !clamped.isNull, clamped.width > 0.03, clamped.height > 0.03 else { return nil }
         return (box: clamped, conf: detection.conf, label: detection.label)
     }
@@ -116,7 +206,7 @@ final class PersonDetector {
         for candidate in sorted where keep.allSatisfy({ iou($0.box, candidate.box) < iouThreshold }) {
             keep.append(candidate)
         }
-        return keep
+        return keep.compactMap(clamp)
     }
 
     private static func iou(_ a: CGRect, _ b: CGRect) -> Float {
