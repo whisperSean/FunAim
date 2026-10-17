@@ -189,7 +189,11 @@ struct ContentView: View {
 
     /// 预览层与数据管线共用同一旋转角：横屏锁定启动时也能保证画面方向正确
     private func applyCurrentDeviceOrientation() {
-        if let angle = CameraRotation.angle(for: UIDevice.current.orientation) {
+        if var angle = CameraRotation.angle(for: UIDevice.current.orientation) {
+            // 用户手动校正：方向与实际相反时旋转 180°
+            if settings.flipRotation {
+                angle = (angle == 0) ? 180 : 0
+            }
             previewAngle = angle
             camera.applyRotationAngle(angle)
         }

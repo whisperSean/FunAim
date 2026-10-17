@@ -45,6 +45,8 @@ final class AppSettings: ObservableObject {
     @Published var minConfidence: Double { didSet { d.set(minConfidence, forKey: "fa.minConfidence") } }
     /// 识别全部类别（车/猫狗等），默认关闭仅识别人物
     @Published var showAllClasses: Bool { didSet { d.set(showAllClasses, forKey: "fa.showAllClasses") } }
+    /// 画面旋转 180°：方向与实际相反时手动校正
+    @Published var flipRotation: Bool { didSet { d.set(flipRotation, forKey: "fa.flipRotation") } }
 
     // 自动瞄准
     @Published var aimEnabled: Bool { didSet { d.set(aimEnabled, forKey: "fa.aimEnabled") } }
@@ -65,8 +67,9 @@ final class AppSettings: ObservableObject {
 
     private init() {
         detectionMode = DetectionMode(rawValue: d.string(forKey: "fa.detectionMode") ?? "") ?? .balanced
-        minConfidence = d.object(forKey: "fa.minConfidence") as? Double ?? 0.55
+        minConfidence = d.object(forKey: "fa.minConfidence") as? Double ?? 0.65
         showAllClasses = d.object(forKey: "fa.showAllClasses") as? Bool ?? false
+        flipRotation = d.object(forKey: "fa.flipRotation") as? Bool ?? false
         aimEnabled = d.object(forKey: "fa.aimEnabled") as? Bool ?? true
         aimTracking = d.object(forKey: "fa.aimTracking") as? Double ?? 0.35
         lockStrength = d.object(forKey: "fa.lockStrength") as? Double ?? 0.6
@@ -82,8 +85,9 @@ final class AppSettings: ObservableObject {
 
     func resetToDefaults() {
         detectionMode = .balanced
-        minConfidence = 0.55
+        minConfidence = 0.65
         showAllClasses = false
+        flipRotation = false
         aimEnabled = true
         aimTracking = 0.35
         lockStrength = 0.6

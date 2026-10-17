@@ -63,16 +63,19 @@ final class PersonDetector {
             }
             let costMs = (CFAbsoluteTimeGetCurrent() - t0) * 1000
 
-            // 类别筛选：默认仅 person；设置开启后识别全部类别
-            // （每帧直读设置中心，切换即时生效）
+            // 类别与置信度筛选：默认仅 person 且带硬性下限（防误检）；
+            // 设置开启"识别全部类别"后显示所有类别（每帧直读设置中心，切换即时生效）
             let showAll = AppSettings.shared.showAllClasses
+            let personFloor: Float = 0.6
             let observations = (request.results as? [VNRecognizedObjectObservation]) ?? []
             let raw = observations
                 .filter { observation in
-                    if showAll { return true }
-                    return observation.labels.contains { $0.identifier.lowercased().contains("person") }
+                    let isPerson = observation.labels.contains { $0.identifier.lowercased().contains("person") }
+                    if isPerson {
+                        return observation.confidence >= max(minConfidence, personFloor)
+                    }
+                    return showAll && observation.confidence >= minConfidence
                 }
-                .filter { $0.confidence >= minConfidence }
                 .map { (box: $0.boundingBox, conf: $0.confidence, label: $0.labels.first?.identifier ?? "object") }
                 .compactMap(Self.clamp)
             let filtered = Self.nms(raw, iouThreshold: 0.45)

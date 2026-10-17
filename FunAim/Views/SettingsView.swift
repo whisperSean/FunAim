@@ -185,6 +185,7 @@ struct SettingsView: View {
             }
 
             toggleRow("显示置信度标签", $settings.showConfidenceLabel)
+            toggleRow("画面旋转 180°（方向反了用这个）", $settings.flipRotation)
             toggleRow("显示性能 HUD", $settings.showHUD)
         }
     }
