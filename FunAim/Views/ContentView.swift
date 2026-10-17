@@ -14,6 +14,7 @@ struct ContentView: View {
     @State private var mapped: [MappedPerson] = []
     @State private var viewSize: CGSize = .zero
     @State private var panelExpanded = false
+    @State private var previewAngle: CGFloat = 0
     @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
@@ -41,7 +42,7 @@ struct ContentView: View {
             }
         }
         .onReceive(NotificationCenter.default.publisher(for: UIDevice.orientationDidChangeNotification)) { _ in
-            camera.applyDeviceOrientation(UIDevice.current.orientation)
+            applyCurrentDeviceOrientation()
         }
     }
 
@@ -52,7 +53,7 @@ struct ContentView: View {
             // 全画幅预览 + 叠加层（延伸至系统区域之下）
             GeometryReader { geo in
                 ZStack {
-                    CameraPreviewView(session: camera.session)
+                    CameraPreviewView(session: camera.session, rotationAngle: previewAngle)
                     OverlayView(persons: mapped,
                                 reticlePoint: aim.reticlePoint(in: geo.size),
                                 targetID: aim.targetID)
@@ -145,7 +146,7 @@ struct ContentView: View {
     // MARK: - 数据管线装配（相机参数每帧直读设置中心）
 
     private func startPipeline() {
-        camera.applyDeviceOrientation(UIDevice.current.orientation)
+        applyCurrentDeviceOrientation()
         camera.onDetection = { persons in
             guard viewSize != .zero else { return }
             let mapper = CoordinateMapper(viewSize: viewSize, bufferSize: camera.bufferSize)
@@ -154,6 +155,14 @@ struct ContentView: View {
             updateAim(with: mappedPersons, in: viewSize)
         }
         camera.configureAndStart()
+    }
+
+    /// 预览层与数据管线共用同一旋转角：横屏锁定启动时也能保证画面方向正确
+    private func applyCurrentDeviceOrientation() {
+        if let angle = CameraRotation.angle(for: UIDevice.current.orientation) {
+            previewAngle = angle
+            camera.applyRotationAngle(angle)
+        }
     }
 
     private func updateAim(with persons: [MappedPerson], in size: CGSize) {

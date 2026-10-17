@@ -30,6 +30,8 @@ final class CameraService: NSObject, ObservableObject {
     @Published private(set) var detectionCount = 0
     /// 实际送入推理的像素缓冲尺寸（横屏方向）
     @Published private(set) var bufferSize: CGSize = .zero
+    /// 当前数据管线旋转角（供预览层同步使用）
+    @Published private(set) var dataRotationAngle: CGFloat = 0
     @Published var lastError: String?
 
     /// 检测结果回调（主线程）
@@ -44,6 +46,8 @@ final class CameraService: NSObject, ObservableObject {
     private var framesSinceMark = 0
     private var lastFPSMark = Date()
     private var isConfigured = false
+    /// 最后已知旋转角（仅 sessionQueue 读写）
+    private var lastRotationAngle: CGFloat = 0
 
     private override init() {
         super.init()
@@ -75,24 +79,24 @@ final class CameraService: NSObject, ObservableObject {
         }
     }
 
-    /// 横屏方向跟随设备姿态：把采集帧旋转到与 UI 一致，Vision 始终按直立帧推理
-    /// UIKit.landscapeLeft → 旋转角 180，landscapeRight → 0（Apple 官方映射表）
-    func applyDeviceOrientation(_ orientation: UIDeviceOrientation) {
-        let angle: CGFloat
-        switch orientation {
-        case .landscapeLeft:  angle = 180
-        case .landscapeRight: angle = 0
-        default: return
-        }
+    /// 按旋转角同步数据管线（sessionQueue 独占 lastRotationAngle，避免与 configure 竞争）
+    func applyRotationAngle(_ angle: CGFloat) {
+        DispatchQueue.main.async { self.dataRotationAngle = angle }
         sessionQueue.async { [weak self] in
-            guard let self, let connection = self.videoOutput.connection(with: .video) else { return }
-            if #available(iOS 17.0, *) {
-                if connection.isVideoRotationAngleSupported(angle) {
-                    connection.videoRotationAngle = angle
-                }
-            } else if connection.isVideoOrientationSupported {
-                connection.videoOrientation = (orientation == .landscapeLeft) ? .landscapeLeft : .landscapeRight
+            guard let self else { return }
+            self.lastRotationAngle = angle
+            self.applyRotationOnConnection(angle)
+        }
+    }
+
+    private func applyRotationOnConnection(_ angle: CGFloat) {
+        guard let connection = videoOutput.connection(with: .video) else { return }
+        if #available(iOS 17.0, *) {
+            if connection.isVideoRotationAngleSupported(angle) {
+                connection.videoRotationAngle = angle
             }
+        } else if connection.isVideoOrientationSupported {
+            connection.videoOrientation = CameraRotation.avOrientation(for: angle)
         }
     }
 
@@ -125,17 +129,9 @@ final class CameraService: NSObject, ObservableObject {
         }
         session.addOutput(videoOutput)
 
-        // 统一横屏输出（0 = 传感器原生横向）；左右横握由 applyDeviceOrientation 动态纠正
-        if let connection = videoOutput.connection(with: .video) {
-            if #available(iOS 17.0, *) {
-                if connection.isVideoRotationAngleSupported(0) {
-                    connection.videoRotationAngle = 0
-                }
-            } else if connection.isVideoOrientationSupported {
-                connection.videoOrientation = .landscapeRight
-            }
-        }
         session.commitConfiguration()
+        // 按最后已知方向旋转，保证首帧方向即正确（默认 0 = 传感器原生横向）
+        applyRotationOnConnection(lastRotationAngle)
     }
 
     /// 在设备支持范围内选取 ≤1080p 且能跑 60fps 的最优格式（优先 720p60）
@@ -161,6 +157,28 @@ final class CameraService: NSObject, ObservableObject {
         device.activeVideoMaxFrameDuration = frameDuration
         device.unlockForConfiguration()
         return true
+    }
+}
+
+// MARK: - 旋转角映射
+
+/// 设备姿态 → 数据管线旋转角（Apple 官方映射：portrait=90 / 270，landscapeLeft=180 / landscapeRight=0）
+enum CameraRotation {
+    static func angle(for deviceOrientation: UIDeviceOrientation) -> CGFloat? {
+        switch deviceOrientation {
+        case .landscapeLeft:  return 180
+        case .landscapeRight: return 0
+        default: return nil   // faceUp/faceDown/unknown 保持上一角度
+        }
+    }
+
+    static func avOrientation(for angle: CGFloat) -> AVCaptureVideoOrientation {
+        switch angle {
+        case 90:  return .portrait
+        case 270: return .portraitUpsideDown
+        case 180: return .landscapeLeft
+        default:  return .landscapeRight
+        }
     }
 }
 
