@@ -56,9 +56,9 @@ final class AppSettings: ObservableObject {
     // 显示样式
     @Published var boxStyle: BoxStyle { didSet { d.set(boxStyle.rawValue, forKey: "fa.boxStyle") } }
     @Published var boxThickness: Double { didSet { d.set(boxThickness, forKey: "fa.boxThickness") } }
+    @Published var boxOpacity: Double { didSet { d.set(boxOpacity, forKey: "fa.boxOpacity") } }
     @Published var boxColorHex: String { didSet { d.set(boxColorHex, forKey: "fa.boxColorHex") } }
     @Published var showConfidenceLabel: Bool { didSet { d.set(showConfidenceLabel, forKey: "fa.showConfidenceLabel") } }
-    @Published var showFloatPanel: Bool { didSet { d.set(showFloatPanel, forKey: "fa.showFloatPanel") } }
     @Published var showHUD: Bool { didSet { d.set(showHUD, forKey: "fa.showHUD") } }
 
     private init() {
@@ -71,9 +71,9 @@ final class AppSettings: ObservableObject {
         aimLineStyle = AimLineStyle(rawValue: d.string(forKey: "fa.aimLineStyle") ?? "") ?? .arrow
         boxStyle = BoxStyle(rawValue: d.string(forKey: "fa.boxStyle") ?? "") ?? .brackets
         boxThickness = d.object(forKey: "fa.boxThickness") as? Double ?? 3
+        boxOpacity = d.object(forKey: "fa.boxOpacity") as? Double ?? 0.9
         boxColorHex = d.string(forKey: "fa.boxColorHex") ?? "#34C759"
         showConfidenceLabel = d.object(forKey: "fa.showConfidenceLabel") as? Bool ?? true
-        showFloatPanel = d.object(forKey: "fa.showFloatPanel") as? Bool ?? true
         showHUD = d.object(forKey: "fa.showHUD") as? Bool ?? true
     }
 
@@ -87,9 +87,9 @@ final class AppSettings: ObservableObject {
         aimLineStyle = .arrow
         boxStyle = .brackets
         boxThickness = 3
+        boxOpacity = 0.9
         boxColorHex = "#34C759"
         showConfidenceLabel = true
-        showFloatPanel = true
         showHUD = true
     }
 }

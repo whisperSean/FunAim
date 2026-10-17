@@ -1,8 +1,9 @@
 import SwiftUI
+import UIKit
 
-/// 主界面：权限门控 → 全画幅预览 + 叠加层 + 灵动岛式状态胶囊 + 玻璃 HUD + 悬浮控制窗
-/// 安全区策略：预览延伸至灵动岛/状态栏/home indicator 之下，
-/// 所有可交互与信息层位于安全区内，自动避让系统区域。
+/// 主界面（横屏 ESP 演示）：
+/// 全画幅预览 + 叠加层 + 顶部灵动岛状态胶囊（点击弹性展开设置面板）+ 玻璃 HUD
+/// 安全区策略：预览延伸至系统区域之下；信息/交互层位于安全区内。
 struct ContentView: View {
 
     @StateObject private var permission = PermissionManager()
@@ -12,7 +13,7 @@ struct ContentView: View {
 
     @State private var mapped: [MappedPerson] = []
     @State private var viewSize: CGSize = .zero
-    @State private var showSettings = false
+    @State private var panelExpanded = false
     @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
@@ -39,13 +40,16 @@ struct ContentView: View {
                 break
             }
         }
+        .onReceive(NotificationCenter.default.publisher(for: UIDevice.orientationDidChangeNotification)) { _ in
+            camera.applyDeviceOrientation(UIDevice.current.orientation)
+        }
     }
 
     // MARK: - 相机主界面
 
     private var cameraView: some View {
         ZStack {
-            // 全画幅预览 + 叠加层（延伸至灵动岛与 home indicator 之下）
+            // 全画幅预览 + 叠加层（延伸至系统区域之下）
             GeometryReader { geo in
                 ZStack {
                     CameraPreviewView(session: camera.session)
@@ -63,38 +67,40 @@ struct ContentView: View {
             }
             .ignoresSafeArea()
 
-            // 安全区内的自适应玻璃层（灵动岛下方起步，自动避让系统区域）
-            VStack(spacing: 10) {
-                DynamicStatusCapsule(
-                    phase: statusPhase,
-                    targetCount: camera.detectionCount,
-                    fps: Int(camera.fps)
-                )
-
-                HStack(alignment: .top, spacing: 12) {
-                    if settings.showHUD {
-                        hudChip
-                            .transition(.opacity.combined(with: .move(edge: .top)))
-                    }
-                    Spacer(minLength: 0)
-                    if settings.showFloatPanel {
-                        FloatingPanel(camera: camera, aimEnabled: $settings.aimEnabled) {
-                            showSettings = true
-                        }
-                    }
-                }
-                .padding(.horizontal, 14)
-                .animation(Motion.spring, value: settings.showHUD)
-                .animation(Motion.spring, value: settings.showFloatPanel)
-
-                Spacer(minLength: 0)
+            // 设置面板（灵动岛展开层）
+            if panelExpanded {
+                settingsPanel
+                    .transition(.scale(scale: 0.12, anchor: .top).combined(with: .opacity))
+                    .zIndex(2)
             }
-            .padding(.top, 4)
+
+            // 顶部灵动岛状态胶囊（常驻，点击展开/收起设置）
+            VStack(spacing: 0) {
+                DynamicStatusCapsule(phase: statusPhase,
+                                     targetCount: camera.detectionCount,
+                                     fps: Int(camera.fps),
+                                     isExpanded: panelExpanded,
+                                     onTap: {
+                                         withAnimation(Motion.island) { panelExpanded.toggle() }
+                                     })
+                Spacer()
+            }
+            .padding(.top, 6)
+            .zIndex(3)
+
+            // HUD（左上；面板展开时隐藏）
+            if settings.showHUD, !panelExpanded {
+                hudChip
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                    .padding(.leading, 14)
+                    .padding(.top, 52)
+                    .transition(.opacity.combined(with: .move(edge: .top)))
+                    .zIndex(1)
+            }
         }
         .accentColor(.green)
-        .sheet(isPresented: $showSettings) { SettingsView() }
-        .onChange(of: settings.detectionMode) { camera.frameStride = $0.frameStride }
-        .onChange(of: settings.minConfidence) { camera.minConfidence = Float($0) }
+        .animation(Motion.spring, value: settings.showHUD)
+        .animation(Motion.island, value: panelExpanded)
         .alert("摄像头不可用",
                isPresented: Binding(
                    get: { camera.lastError != nil },
@@ -106,6 +112,28 @@ struct ContentView: View {
                message: { Text(camera.lastError ?? "") })
     }
 
+    // MARK: - 设置面板
+
+    private var settingsPanel: some View {
+        SettingsView {
+            withAnimation(Motion.island) { panelExpanded = false }
+        }
+        .frame(width: panelWidth, height: panelHeight)
+        .clipShape(RoundedRectangle(cornerRadius: Radii.card, style: .continuous))
+        .liquidGlass(cornerRadius: Radii.card, intensity: 0.92)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .padding(.top, 54)
+        .padding(.horizontal, 16)
+    }
+
+    private var panelWidth: CGFloat {
+        min(720, max(420, viewSize.width * 0.62))
+    }
+
+    private var panelHeight: CGFloat {
+        max(240, viewSize.height - 74)
+    }
+
     // MARK: - 状态推导
 
     private var statusPhase: DynamicStatusCapsule.Phase {
@@ -114,11 +142,10 @@ struct ContentView: View {
         return camera.detectionCount > 0 ? .tracking : .searching
     }
 
-    // MARK: - 数据管线装配（逻辑不变）
+    // MARK: - 数据管线装配（相机参数每帧直读设置中心）
 
     private func startPipeline() {
-        camera.frameStride = settings.detectionMode.frameStride
-        camera.minConfidence = Float(settings.minConfidence)
+        camera.applyDeviceOrientation(UIDevice.current.orientation)
         camera.onDetection = { persons in
             guard viewSize != .zero else { return }
             let mapper = CoordinateMapper(viewSize: viewSize, bufferSize: camera.bufferSize)

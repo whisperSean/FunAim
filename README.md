@@ -9,7 +9,7 @@
 |---|------|----------|
 | 1 | 启动第一时间申请摄像头权限 + 失败引导跳转 | `Core/PermissionManager.swift`、`Views/ContentView.swift`（launchView / deniedView，含"前往系统设置"与"重新检测"） |
 | 2 | 本地人物检测 + 实时矩形框标记 | `Core/PersonDetector.swift`（VNDetectHumanRectanglesRequest + 跨帧 ID 跟踪）、`Views/OverlayView.swift` |
-| 3 | 悬浮窗口 + 叠加绘制射线等元素 | `Views/FloatingPanel.swift`（可拖拽）、`Views/OverlayView.swift`（瞄准射线/准星/辉光/置信度标签） |
+| 3 | 悬浮窗口 + 叠加绘制射线等元素 | `Views/Components/LiquidGlass.swift`（灵动岛式菜单）、`Views/OverlayView.swift`（顶部居中射线/瞄准线/准星/置信度标签） |
 | 4 | 自动瞄准锁定人物目标 | `Core/AimEngine.swift`（最近邻目标选择 + 粘滞锁定 + 指数平滑追踪） |
 | 5 | 完整设置界面 | `Views/SettingsView.swift`（运行模式/灵敏度/瞄准开关与参数/边框样式/颜色/HUD 开关/运行状态） |
 | 6 | 全部本地推理，无云端依赖 | Vision 框架设备端执行，工程无任何网络代码 |
@@ -31,11 +31,10 @@ FunAim/
     │   └── CoordinateMapper.swift   # Vision 坐标 → 视图坐标（等比填充逆映射）
     ├── Models/AppSettings.swift     # 设置中心 + 持久化 + 颜色工具
     └── Views/
-        ├── ContentView.swift        # 权限门控 + 主界面组装
+        ├── ContentView.swift        # 权限门控 + 横屏主界面组装
         ├── CameraPreviewView.swift  # AVCaptureVideoPreviewLayer 封装
-        ├── OverlayView.swift        # Canvas 叠加绘制
-        ├── FloatingPanel.swift      # 可拖拽悬浮控制窗
-        ├── SettingsView.swift       # 设置界面
+        ├── OverlayView.swift        # Canvas 叠加绘制（方框/射线/准星）
+        ├── SettingsView.swift       # 设置面板（灵动岛展开层）
         └── Components/LiquidGlass.swift  # 液态玻璃组件库 · 动效令牌 · 灵动岛式状态胶囊
 ```
 
@@ -188,3 +187,12 @@ yolo export model=yolo11n.pt format=coreml imgsz=640   # 生成 yolo11n.mlmodel
 
 ### 兼容性说明
 - 以上效果基于 iOS 15 的 Material API 实现（部署目标不变）；iOS 26 原生 `GlassEffectContainer` Liquid Glass API 需要更高部署目标，当前实现为视觉等效方案，未来可平滑替换。
+
+## v2 横屏 ESP 演示模式
+
+- **仅横屏**（LandscapeLeft/Right，默认横屏打开）：采集帧旋转角跟随设备姿态（landscapeRight=0 / landscapeLeft=180，iOS 17+ 走 `videoRotationAngle`），Vision 始终按直立帧推理，坐标映射自适应；
+- **ESP 标准视觉**：顶部居中射线（origin = 屏幕顶端中点）射向全部已识别目标，锁定目标辉光高亮 + 绿色端点；准星瞄准线保留（实线/虚线/箭头三种样式）；
+- **方框样式可调**：粗细（1–8pt）/ 颜色（白/绿/蓝/橙/红）/ 透明度（20%–100%）+ 角框/全框两种形态；
+- **灵动岛设置菜单**：顶部胶囊常驻可点，点击以灵动岛同款弹簧曲线展开设置面板（scale 0.12→1 + 淡入，收起反向动画，类似 iOS 应用开合的观感）；胶囊展开态显示"功能设置 · 点击收起"；
+- **设置即时生效**：相机采集线程每帧直读设置中心（运行模式/灵敏度），显示开关由 SwiftUI 状态驱动，无传播延迟；
+- 旧"悬浮控制窗"已移除（功能并入灵动岛菜单），`FloatingPanel.swift` 删除。

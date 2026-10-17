@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// 叠加渲染层：在预览画面之上绘制人物方框、瞄准射线、准星（全部 GPU 绘制，iOS 15 Canvas）
+/// 叠加渲染层（ESP 风格）：人物方框 + 顶部居中射线 + 准星瞄准线 + 置信度标签
 struct OverlayView: View {
 
     let persons: [MappedPerson]
@@ -9,15 +9,23 @@ struct OverlayView: View {
     @ObservedObject private var settings = AppSettings.shared
 
     var body: some View {
-        Canvas { context, _ in
-            let accent = Color(hex: settings.boxColorHex)
+        Canvas { context, size in
+            let baseOpacity = settings.boxOpacity
 
             for person in persons {
                 let isTarget = person.id == targetID
-                let color = isTarget ? Color.white : accent
+                let color = (isTarget ? Color.white : Color(hex: settings.boxColorHex)).opacity(baseOpacity)
                 drawBox(&context, rect: person.viewRect, color: color, isTarget: isTarget)
                 if settings.showConfidenceLabel {
                     drawConfidence(&context, person: person)
+                }
+            }
+
+            // 顶部居中射线：从屏幕顶端中点射向每个已识别目标，锁定目标高亮
+            if settings.aimEnabled, settings.showAimLine {
+                let origin = CGPoint(x: size.width / 2, y: 0)
+                for person in persons {
+                    drawRay(&context, from: origin, to: person.center, emphasized: person.id == targetID)
                 }
             }
 
@@ -39,7 +47,7 @@ struct OverlayView: View {
         let width = CGFloat(settings.boxThickness)
         let stroke = StrokeStyle(lineWidth: width, lineCap: .round, lineJoin: .round)
         if isTarget {
-            // 锁定目标：外圈辉光 + 高亮描边
+            // 锁定目标：外圈辉光 + 白色高亮描边
             context.stroke(path, with: .color(color.opacity(0.30)), lineWidth: width + 6)
         }
         context.stroke(path, with: .color(color.opacity(0.95)), style: stroke)
@@ -89,7 +97,28 @@ struct OverlayView: View {
         context.draw(resolved, at: CGPoint(x: centerX, y: centerY))
     }
 
-    // MARK: - 瞄准射线
+    // MARK: - 顶部居中射线（ESP snapline）
+
+    private func drawRay(_ context: inout GraphicsContext, from origin: CGPoint, to point: CGPoint, emphasized: Bool) {
+        var path = Path()
+        path.move(to: origin)
+        path.addLine(to: point)
+        if emphasized {
+            // 锁定目标：辉光 + 高亮
+            context.stroke(path, with: .color(.white.opacity(0.15)), lineWidth: 6)
+        }
+        let color = emphasized ? Color.white.opacity(0.95) : Color.white.opacity(0.30)
+        context.stroke(path, with: .color(color),
+                       style: StrokeStyle(lineWidth: emphasized ? 2.5 : 1.5, lineCap: .round))
+
+        // 目标端点标记
+        var dot = Path()
+        let radius: CGFloat = emphasized ? 5 : 3
+        dot.addEllipse(in: CGRect(x: point.x - radius, y: point.y - radius, width: radius * 2, height: radius * 2))
+        context.fill(dot, with: .color(emphasized ? .green : .white.opacity(0.6)))
+    }
+
+    // MARK: - 准星瞄准线
 
     private func drawAimLine(_ context: inout GraphicsContext, from: CGPoint, to: CGPoint) {
         var path = Path()

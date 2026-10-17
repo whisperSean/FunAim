@@ -134,6 +134,10 @@ struct DynamicStatusCapsule: View {
     let phase: Phase
     let targetCount: Int
     let fps: Int
+    /// 设置面板展开态：胶囊变宽显示"功能设置"
+    var isExpanded: Bool = false
+    /// 点击回调（nil 时不可交互）
+    var onTap: (() -> Void)? = nil
 
     var body: some View {
         ZStack {
@@ -142,12 +146,15 @@ struct DynamicStatusCapsule: View {
         }
         .frame(width: size.width, height: size.height)
         .animation(Motion.island, value: phase)
-        .allowsHitTesting(false)
+        .animation(Motion.island, value: isExpanded)
+        .onTapGesture { onTap?() }
+        .allowsHitTesting(onTap != nil)
     }
 
     // MARK: 尺寸（宽度与高度随状态形变）
 
     private var size: (width: CGFloat, height: CGFloat) {
+        if isExpanded { return (252, 40) }
         switch phase {
         case .idle:      return (56, 34)
         case .searching: return (122, 34)
@@ -181,39 +188,57 @@ struct DynamicStatusCapsule: View {
     @ViewBuilder
     private var content: some View {
         ZStack {
-            switch phase {
-            case .idle:
-                Circle()
-                    .fill(Color.gray.opacity(0.6))
-                    .frame(width: 7, height: 7)
-                    .transition(.scale(scale: 0.5).combined(with: .opacity))
-
-            case .searching:
-                HStack(spacing: 7) {
-                    Image(systemName: "magnifyingglass")
+            if isExpanded {
+                HStack(spacing: 8) {
+                    Image(systemName: "gearshape.fill")
+                        .font(.system(size: 12, weight: .bold))
+                        .foregroundColor(.green)
+                    Text("功能设置")
+                        .font(.system(size: 12, weight: .bold))
+                        .foregroundColor(.white)
+                    Capsule()
+                        .fill(Color.white.opacity(0.25))
+                        .frame(width: 1, height: 14)
+                    Text("点击收起")
                         .font(.system(size: 11, weight: .semibold))
-                        .foregroundColor(.white.opacity(0.7))
-                    Text("搜索目标")
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundColor(.white.opacity(0.85))
+                        .foregroundColor(.white.opacity(0.6))
                 }
                 .transition(.scale(scale: 0.7).combined(with: .opacity))
-
-            case .tracking:
-                HStack(spacing: 7) {
+            } else {
+                switch phase {
+                case .idle:
                     Circle()
-                        .fill(Color.green)
+                        .fill(Color.gray.opacity(0.6))
                         .frame(width: 7, height: 7)
-                        .modifier(PulseEffect(active: true))
-                    Text("发现 \(targetCount) 人")
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundColor(.white.opacity(0.92))
-                }
-                .transition(.scale(scale: 0.7).combined(with: .opacity))
+                        .transition(.scale(scale: 0.5).combined(with: .opacity))
 
-            case .locked:
-                lockedRow
+                case .searching:
+                    HStack(spacing: 7) {
+                        Image(systemName: "magnifyingglass")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundColor(.white.opacity(0.7))
+                        Text("搜索目标")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundColor(.white.opacity(0.85))
+                    }
                     .transition(.scale(scale: 0.7).combined(with: .opacity))
+
+                case .tracking:
+                    HStack(spacing: 7) {
+                        Circle()
+                            .fill(Color.green)
+                            .frame(width: 7, height: 7)
+                            .modifier(PulseEffect(active: true))
+                        Text("发现 \(targetCount) 人")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundColor(.white.opacity(0.92))
+                    }
+                    .transition(.scale(scale: 0.7).combined(with: .opacity))
+
+                case .locked:
+                    lockedRow
+                        .transition(.scale(scale: 0.7).combined(with: .opacity))
+                }
             }
         }
         .padding(.horizontal, 12)

@@ -1,25 +1,19 @@
 import SwiftUI
 
-/// 功能设置：滚动响应液态玻璃导航栏 + 玻璃卡片分组
-/// 视觉遵循 iOS 原生规范：continuous 大圆角、系统语义色、弹性动效曲线；
-/// 所有设置项与绑定关系与旧版完全一致，仅重构视觉表现。
+/// 功能设置面板：由灵动岛胶囊点击展开/收起（替代旧 sheet）。
+/// 所有设置项与绑定关系保持一致，仅容器由整页 Form 改为横屏玻璃面板。
 struct SettingsView: View {
+
+    var onClose: (() -> Void)? = nil
 
     @ObservedObject private var settings = AppSettings.shared
     @ObservedObject private var camera = CameraService.shared
-    @Environment(\.dismiss) private var dismiss
 
     /// 低饱和 Apple 系统色板：白 / 绿 / 蓝 / 橙 / 红（无紫色、无高饱和黄）
     private let colorOptions = ["#FFFFFF", "#34C759", "#007AFF", "#FF9500", "#FF3B30"]
 
-    /// 滚动超过阈值后导航栏玻璃强度弹性增强（状态翻转才写入，避免滚动逐帧触发重算）
-    @State private var isScrolled = false
-
     var body: some View {
         ZStack(alignment: .top) {
-            Color(uiColor: .systemGroupedBackground)
-                .ignoresSafeArea()
-
             ScrollView {
                 VStack(spacing: 14) {
                     detectionCard
@@ -29,34 +23,42 @@ struct SettingsView: View {
                     resetButton
                 }
                 .padding(.horizontal, 14)
-                .padding(.top, 70)
-                .padding(.bottom, 28)
-                .background(scrollOffsetReader)
-            }
-            .coordinateSpace(name: "settings.scroll")
-            .onPreferenceChange(ScrollOffsetKey.self) { offset in
-                let newValue = offset > 8
-                if newValue != isScrolled { isScrolled = newValue }
+                .padding(.top, 52)
+                .padding(.bottom, 22)
             }
 
-            LiquidGlassNavBar(title: "功能设置",
-                              isScrolled: isScrolled,
-                              fps: Int(camera.fps)) {
-                dismiss()
-            }
+            headerRow
         }
         .accentColor(.green)
     }
 
-    // MARK: - 滚动监听
+    // MARK: - 面板头（常驻，滚动内容从其下穿过）
 
-    private var scrollOffsetReader: some View {
-        GeometryReader { geo in
-            Color.clear.preference(
-                key: ScrollOffsetKey.self,
-                value: -geo.frame(in: .named("settings.scroll")).minY
-            )
+    private var headerRow: some View {
+        HStack {
+            Text("功能设置")
+                .font(.headline)
+                .foregroundColor(.primary)
+            Spacer()
+            if let onClose {
+                Button(action: onClose) {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: 24))
+                        .foregroundColor(.primary.opacity(0.55))
+                }
+                .buttonStyle(PressableButtonStyle())
+            }
         }
+        .padding(.horizontal, 16)
+        .padding(.top, 8)
+        .frame(height: 44)
+        .background(
+            Rectangle()
+                .fill(.ultraThinMaterial)
+                .opacity(0.9)
+                .frame(height: 44),
+            alignment: .top
+        )
     }
 
     // MARK: - 检测模型
@@ -148,6 +150,9 @@ struct SettingsView: View {
             sliderRow("边框粗细", value: $settings.boxThickness, range: 1...8,
                       display: String(format: "%.0f", settings.boxThickness))
 
+            sliderRow("边框透明度", value: $settings.boxOpacity, range: 0.2...1,
+                      display: "\(Int(settings.boxOpacity * 100))%")
+
             VStack(alignment: .leading, spacing: 10) {
                 Text("标注颜色").rowTitle()
                 HStack(spacing: 14) {
@@ -159,7 +164,6 @@ struct SettingsView: View {
             }
 
             toggleRow("显示置信度标签", $settings.showConfidenceLabel)
-            toggleRow("显示悬浮控制窗", $settings.showFloatPanel)
             toggleRow("显示性能 HUD", $settings.showHUD)
         }
     }
@@ -282,14 +286,5 @@ private extension Text {
     }
     func valueText() -> Text {
         font(.subheadline.monospacedDigit()).foregroundColor(.secondary)
-    }
-}
-
-// MARK: - 滚动偏移
-
-private struct ScrollOffsetKey: PreferenceKey {
-    static var defaultValue: CGFloat = 0
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-        value = nextValue()
     }
 }

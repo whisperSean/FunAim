@@ -1,5 +1,6 @@
 import AVFoundation
 import Foundation
+import UIKit
 
 enum CameraError: LocalizedError {
     case noCamera
@@ -27,13 +28,9 @@ final class CameraService: NSObject, ObservableObject {
     @Published private(set) var fps: Double = 0
     @Published private(set) var inferenceMs: Double = 0
     @Published private(set) var detectionCount = 0
-    /// 实际送入推理的像素缓冲尺寸（竖屏方向）
+    /// 实际送入推理的像素缓冲尺寸（横屏方向）
     @Published private(set) var bufferSize: CGSize = .zero
     @Published var lastError: String?
-
-    // 由设置界面驱动的推理参数（主线程写入，采集线程读取）
-    var frameStride = 2
-    var minConfidence: Float = 0.5
 
     /// 检测结果回调（主线程）
     var onDetection: (([DetectedPerson]) -> Void)?
@@ -78,6 +75,27 @@ final class CameraService: NSObject, ObservableObject {
         }
     }
 
+    /// 横屏方向跟随设备姿态：把采集帧旋转到与 UI 一致，Vision 始终按直立帧推理
+    /// UIKit.landscapeLeft → 旋转角 180，landscapeRight → 0（Apple 官方映射表）
+    func applyDeviceOrientation(_ orientation: UIDeviceOrientation) {
+        let angle: CGFloat
+        switch orientation {
+        case .landscapeLeft:  angle = 180
+        case .landscapeRight: angle = 0
+        default: return
+        }
+        sessionQueue.async { [weak self] in
+            guard let self, let connection = self.videoOutput.connection(with: .video) else { return }
+            if #available(iOS 17.0, *) {
+                if connection.isVideoRotationAngleSupported(angle) {
+                    connection.videoRotationAngle = angle
+                }
+            } else if connection.isVideoOrientationSupported {
+                connection.videoOrientation = (orientation == .landscapeLeft) ? .landscapeLeft : .landscapeRight
+            }
+        }
+    }
+
     // MARK: - 配置
 
     private func configure() throws {
@@ -107,15 +125,14 @@ final class CameraService: NSObject, ObservableObject {
         }
         session.addOutput(videoOutput)
 
-        // 统一竖屏输出：预览、推理、坐标映射三端一致
-        // iOS 17 起使用新旋转 API（videoOrientation 已废弃）
+        // 统一横屏输出（0 = 传感器原生横向）；左右横握由 applyDeviceOrientation 动态纠正
         if let connection = videoOutput.connection(with: .video) {
             if #available(iOS 17.0, *) {
-                if connection.isVideoRotationAngleSupported(90) {
-                    connection.videoRotationAngle = 90
+                if connection.isVideoRotationAngleSupported(0) {
+                    connection.videoRotationAngle = 0
                 }
             } else if connection.isVideoOrientationSupported {
-                connection.videoOrientation = .portrait
+                connection.videoOrientation = .landscapeRight
             }
         }
         session.commitConfiguration()
@@ -171,13 +188,13 @@ extension CameraService: AVCaptureVideoDataOutputSampleBufferDelegate {
             DispatchQueue.main.async { [weak self] in self?.fps = measured }
         }
 
-        // 按"运行模式"的帧间隔送入本地推理
+        // 按"运行模式"的帧间隔送入本地推理（每帧直读设置中心，杜绝切换不生效）
+        let settings = AppSettings.shared
         frameCounter += 1
-        guard frameCounter % max(frameStride, 1) == 0,
+        guard frameCounter % max(settings.detectionMode.frameStride, 1) == 0,
               let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
 
-        let minConf = minConfidence
-        detector.detect(pixelBuffer: pixelBuffer, minConfidence: minConf) { [weak self] persons, cost in
+        detector.detect(pixelBuffer: pixelBuffer, minConfidence: Float(settings.minConfidence)) { [weak self] persons, cost in
             guard let self else { return }
             self.inferenceMs = cost
             self.detectionCount = persons.count
