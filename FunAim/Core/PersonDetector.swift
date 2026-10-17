@@ -81,11 +81,15 @@ final class PersonDetector {
     // MARK: - 模型加载
 
     private static func locateCoreMLModel() -> URL? {
-        if let url = Bundle.main.url(forResource: coreMLModelName, withExtension: "mlmodelc") {
+        let name = coreMLModelName
+        if let url = Bundle.main.url(forResource: name, withExtension: "mlmodelc") {
             return url
         }
-        if let url = Bundle.main.url(forResource: coreMLModelName, withExtension: "mlmodel") {
+        if let url = Bundle.main.url(forResource: name, withExtension: "mlmodel") {
             return try? MLModel.compileModel(at: url)   // 一次性编译到临时目录
+        }
+        if let url = Bundle.main.url(forResource: name, withExtension: "mlpackage") {
+            return try? MLModel.compileModel(at: url)   // 新版 coremltools 输出格式
         }
         return nil
     }
