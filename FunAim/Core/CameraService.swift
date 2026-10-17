@@ -32,6 +32,10 @@ final class CameraService: NSObject, ObservableObject {
     @Published private(set) var bufferSize: CGSize = .zero
     /// 当前数据管线旋转角（供预览层同步使用）
     @Published private(set) var dataRotationAngle: CGFloat = 0
+    /// 闪光灯状态
+    @Published private(set) var torchOn = false
+    /// 当前变焦倍数
+    @Published private(set) var currentZoom: CGFloat = 1
     @Published var lastError: String?
 
     /// 检测结果回调（主线程）
@@ -48,9 +52,34 @@ final class CameraService: NSObject, ObservableObject {
     private var isConfigured = false
     /// 最后已知旋转角（仅 sessionQueue 读写）
     private var lastRotationAngle: CGFloat = 0
+    /// 过热降级：推理帧间隔下限（nominal/fair=1，serious=2，critical=3）
+    private var thermalFloorStride = 1
+    private var thermalObserver: NSObjectProtocol?
+    private weak var currentDevice: AVCaptureDevice?
 
     private override init() {
         super.init()
+        thermalObserver = NotificationCenter.default.addObserver(
+            forName: ProcessInfo.thermalStateDidChangeNotification,
+            object: nil, queue: .main
+        ) { [weak self] _ in
+            self?.refreshThermalFloor()
+        }
+        refreshThermalFloor()
+    }
+
+    deinit {
+        if let thermalObserver {
+            NotificationCenter.default.removeObserver(thermalObserver)
+        }
+    }
+
+    private func refreshThermalFloor() {
+        switch ProcessInfo.processInfo.thermalState {
+        case .critical: thermalFloorStride = 3
+        case .serious:  thermalFloorStride = 2
+        default:        thermalFloorStride = 1
+        }
     }
 
     /// 幂等：配置并启动采集会话（后台线程执行，避免阻塞主线程）
@@ -67,6 +96,7 @@ final class CameraService: NSObject, ObservableObject {
                 }
             }
             self.session.startRunning()
+            self.detector.warmup()   // 推理预热，消除首帧冷启动
             DispatchQueue.main.async { self.isRunning = self.session.isRunning }
         }
     }
@@ -100,6 +130,36 @@ final class CameraService: NSObject, ObservableObject {
         }
     }
 
+    /// 双指变焦（1x~6x，越界钳制）
+    func setZoom(_ factor: CGFloat) {
+        let clamped = min(max(factor, 1), 6)
+        sessionQueue.async { [weak self] in
+            guard let self, let device = self.currentDevice else { return }
+            do {
+                try device.lockForConfiguration()
+                device.videoZoomFactor = clamped
+                device.unlockForConfiguration()
+                DispatchQueue.main.async { self.currentZoom = clamped }
+            } catch { }
+        }
+    }
+
+    func toggleTorch() {
+        setTorch(!torchOn)
+    }
+
+    func setTorch(_ on: Bool) {
+        sessionQueue.async { [weak self] in
+            guard let self, let device = self.currentDevice, device.hasTorch else { return }
+            do {
+                try device.lockForConfiguration()
+                device.torchMode = on ? .on : .off
+                device.unlockForConfiguration()
+                DispatchQueue.main.async { self.torchOn = on }
+            } catch { }
+        }
+    }
+
     // MARK: - 配置
 
     private func configure() throws {
@@ -111,6 +171,7 @@ final class CameraService: NSObject, ObservableObject {
         let highFPS = (try? selectHighFrameRateFormat(for: device)) ?? false
 
         let input = try AVCaptureDeviceInput(device: device)
+        currentDevice = device
 
         session.beginConfiguration()
         session.sessionPreset = highFPS ? .inputPriority : .hd1280x720
@@ -206,10 +267,12 @@ extension CameraService: AVCaptureVideoDataOutputSampleBufferDelegate {
             DispatchQueue.main.async { [weak self] in self?.fps = measured }
         }
 
-        // 按"运行模式"的帧间隔送入本地推理（每帧直读设置中心，杜绝切换不生效）
+        // 按"运行模式"的帧间隔送入本地推理（每帧直读设置中心，杜绝切换不生效）；
+        // 过热时自动提升推理帧间隔下限
         let settings = AppSettings.shared
         frameCounter += 1
-        guard frameCounter % max(settings.detectionMode.frameStride, 1) == 0,
+        let stride = max(settings.detectionMode.frameStride, thermalFloorStride)
+        guard frameCounter % max(stride, 1) == 0,
               let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
 
         detector.detect(pixelBuffer: pixelBuffer, minConfidence: Float(settings.minConfidence)) { [weak self] persons, cost in

@@ -15,6 +15,8 @@ struct ContentView: View {
     @State private var viewSize: CGSize = .zero
     @State private var panelExpanded = false
     @State private var previewAngle: CGFloat = 0
+    @State private var pinchBase: CGFloat = 1
+    @State private var lastLocked = false
     @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
@@ -65,6 +67,16 @@ struct ContentView: View {
                 .onChange(of: geo.size) { newSize in
                     viewSize = newSize
                 }
+                // 双指捏合变焦（1x~6x）
+                .simultaneousGesture(
+                    MagnificationGesture()
+                        .onChanged { value in
+                            camera.setZoom(pinchBase * value)
+                        }
+                        .onEnded { _ in
+                            pinchBase = camera.currentZoom
+                        }
+                )
             }
             .ignoresSafeArea()
 
@@ -98,9 +110,27 @@ struct ContentView: View {
                     .transition(.opacity.combined(with: .move(edge: .top)))
                     .zIndex(1)
             }
+            // 闪光灯开关（右上）
+            if !panelExpanded {
+                Button {
+                    camera.toggleTorch()
+                } label: {
+                    Image(systemName: camera.torchOn ? "flashlight.on.fill" : "flashlight.off.fill")
+                        .font(.system(size: 15, weight: .bold))
+                        .foregroundColor(camera.torchOn ? .yellow : .primary)
+                        .frame(width: 38, height: 38)
+                        .liquidGlass(cornerRadius: 19, intensity: 0.7)
+                }
+                .buttonStyle(PressableButtonStyle())
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+                .padding(.trailing, 14)
+                .padding(.top, 52)
+                .zIndex(1)
+            }
         }
         .accentColor(.green)
         .animation(Motion.spring, value: settings.showHUD)
+        .animation(Motion.spring, value: camera.torchOn)
         .animation(Motion.island, value: panelExpanded)
         .alert("摄像头不可用",
                isPresented: Binding(
@@ -168,6 +198,10 @@ struct ContentView: View {
     private func updateAim(with persons: [MappedPerson], in size: CGSize) {
         guard settings.aimEnabled else {
             aim.reset()
+            if lastLocked {
+                lastLocked = false
+                UIImpactFeedbackGenerator(style: .light).impactOccurred()
+            }
             return
         }
         if let target = aim.selectTarget(from: persons, viewSize: size, lockStrength: settings.lockStrength) {
@@ -176,6 +210,11 @@ struct ContentView: View {
             // 无目标时准星缓慢回归画面中心
             aim.moveReticle(toward: CGPoint(x: size.width / 2, y: size.height / 2),
                             in: size, tracking: 0.03)
+        }
+        // 锁定/丢失切触觉反馈
+        if aim.locked != lastLocked {
+            UIImpactFeedbackGenerator(style: aim.locked ? .medium : .light).impactOccurred()
+            lastLocked = aim.locked
         }
     }
 

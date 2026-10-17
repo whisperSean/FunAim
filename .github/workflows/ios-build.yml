@@ -62,6 +62,21 @@ jobs:
           unzip -q xcodegen.zip -d xcodegen-tmp
           echo "$PWD/xcodegen-tmp/xcodegen/bin" >> "$GITHUB_PATH"
 
+      # 自动导出 YOLO11n CoreML 并打包进 IPA（失败不影响构建，自动回退 Vision）
+      - name: Export YOLO11n CoreML
+        continue-on-error: true
+        run: |
+          python3 -m pip install --upgrade pip
+          pip3 install --quiet ultralytics coremltools
+          python3 -c "from ultralytics import YOLO; YOLO('yolo11n.pt').export(format='coreml', imgsz=640, nms=True)"
+          if [ -f yolo11n.mlmodel ]; then
+            mkdir -p FunAim/Resources
+            mv yolo11n.mlmodel FunAim/Resources/yolo11n.mlmodel
+            echo "YOLO model bundled: $(du -h FunAim/Resources/yolo11n.mlmodel)"
+          else
+            echo "WARN: model export failed, falling back to Vision"
+          fi
+
       - name: Generate Xcode project
         run: xcodegen
 

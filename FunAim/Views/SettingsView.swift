@@ -32,32 +32,49 @@ struct SettingsView: View {
         .accentColor(.green)
     }
 
-    // MARK: - 面板头（常驻，滚动内容从其下穿过）
+    // MARK: - 面板头（常驻，滚动内容从其下穿过；支持下拉收起）
 
     private var headerRow: some View {
-        HStack {
-            Text("功能设置")
-                .font(.headline)
-                .foregroundColor(.primary)
-            Spacer()
-            if let onClose {
-                Button(action: onClose) {
-                    Image(systemName: "xmark.circle.fill")
-                        .font(.system(size: 24))
-                        .foregroundColor(.primary.opacity(0.55))
+        VStack(spacing: 4) {
+            // 收起把手
+            Capsule()
+                .fill(Color.primary.opacity(0.25))
+                .frame(width: 44, height: 5)
+                .padding(.top, 6)
+            HStack {
+                Text("功能设置")
+                    .font(.headline)
+                    .foregroundColor(.primary)
+                Spacer()
+                if let onClose {
+                    Button(action: onClose) {
+                        Image(systemName: "xmark.circle.fill")
+                            .font(.system(size: 24))
+                            .foregroundColor(.primary.opacity(0.55))
+                    }
+                    .buttonStyle(PressableButtonStyle())
                 }
-                .buttonStyle(PressableButtonStyle())
             }
+            .padding(.horizontal, 16)
+            .padding(.bottom, 8)
         }
-        .padding(.horizontal, 16)
-        .padding(.top, 8)
-        .frame(height: 44)
+        .frame(height: 58)
         .background(
             Rectangle()
                 .fill(.ultraThinMaterial)
                 .opacity(0.9)
-                .frame(height: 44),
+                .frame(height: 58),
             alignment: .top
+        )
+        .contentShape(Rectangle())
+        .highPriorityGesture(
+            DragGesture()
+                .onEnded { value in
+                    // 下拉超过 60pt 收起面板
+                    if value.translation.height > 60 {
+                        onClose?()
+                    }
+                }
         )
     }
 

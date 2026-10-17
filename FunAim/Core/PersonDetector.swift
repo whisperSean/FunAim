@@ -40,6 +40,17 @@ final class PersonDetector {
         }
     }
 
+    /// 推理预热：消除首次 perform 的冷启动开销（会话启动时调用一次）
+    func warmup() {
+        queue.async { [request] in
+            var pixelBuffer: CVPixelBuffer?
+            CVPixelBufferCreate(kCFAllocatorDefault, 64, 64, kCVPixelFormatType_32BGRA, nil, &pixelBuffer)
+            guard let pb = pixelBuffer else { return }
+            let handler = VNImageRequestHandler(cvPixelBuffer: pb, orientation: .up, options: [:])
+            try? handler.perform([request])
+        }
+    }
+
     /// 异步检测，completion 回调主线程
     func detect(pixelBuffer: CVPixelBuffer,
                 minConfidence: Float,
@@ -123,59 +134,122 @@ final class PersonDetector {
     }
 }
 
-/// 轻量跟踪：最近邻匹配分配跨帧稳定 ID + 检测框 EMA 平滑（抑制逐帧抖动）
-private final class PersonTracker {
+/// 轻量跟踪：IoU 优先 + 中心距离兜底的双级匹配，
+/// 检测框 EMA 平滑 + 线性速度外推 + 短暂遮挡滑行，保证目标 ID 跨帧稳定、锁定不跳人
+final class PersonTracker {
 
     private struct Track {
         let id: UUID
-        let rect: CGRect
+        var rect: CGRect
+        var velocity: CGSize
+        var confidence: Float
+        var misses: Int
     }
 
     private var tracks: [Track] = []
     /// 平滑系数：越大越贴测量值（0.6 ≈ 抑制抖动且延迟极小）
     private let smoothAlpha: CGFloat = 0.6
-    /// 归一化坐标下的匹配阈值
+    /// 中心距离兜底匹配阈值（归一化坐标）
     private let matchThreshold: CGFloat = 0.14
+    /// IoU 匹配阈值
+    private let iouMatchThreshold: CGFloat = 0.25
+    /// 遮挡滑行帧数（推理帧）：期间按速度外推输出，保持锁定稳定
+    private let maxCoastMisses = 2
 
     func assign(_ detections: [(box: CGRect, conf: Float)]) -> [DetectedPerson] {
-        var used = [Bool](repeating: false, count: tracks.count)
-        var result: [DetectedPerson] = []
-        result.reserveCapacity(detections.count)
-
-        for detection in detections {
-            let center = CGPoint(x: detection.box.midX, y: detection.box.midY)
-            var matchIndex = -1
-            var bestDistance = matchThreshold
-            for (index, track) in tracks.enumerated() where !used[index] {
-                let trackCenter = CGPoint(x: track.rect.midX, y: track.rect.midY)
-                let distance = hypot(trackCenter.x - center.x, trackCenter.y - center.y)
-                if distance < bestDistance {
-                    bestDistance = distance
-                    matchIndex = index
-                }
-            }
-
-            let id: UUID
-            let box: CGRect
-            if matchIndex >= 0 {
-                used[matchIndex] = true
-                id = tracks[matchIndex].id
-                // 指数平滑：位置与尺寸同时收敛，消除框的逐帧跳变
-                let previous = tracks[matchIndex].rect
-                box = CGRect(
-                    x: previous.minX + (detection.box.minX - previous.minX) * smoothAlpha,
-                    y: previous.minY + (detection.box.minY - previous.minY) * smoothAlpha,
-                    width: previous.width + (detection.box.width - previous.width) * smoothAlpha,
-                    height: previous.height + (detection.box.height - previous.height) * smoothAlpha
-                )
-            } else {
-                id = UUID()
-                box = detection.box
-            }
-            result.append(DetectedPerson(id: id, box: box, confidence: detection.conf))
+        // 1) 线性速度外推：补偿推理间隔内的位移
+        for index in tracks.indices {
+            tracks[index].rect = tracks[index].rect.offsetBy(dx: tracks[index].velocity.width,
+                                                             dy: tracks[index].velocity.height)
         }
 
-        tracks = result.map { Track(id: $0.id, rect: $0.box) }
+        var detectionUsed = [Bool](repeating: false, count: detections.count)
+        var trackMatched = [Bool](repeating: false, count: tracks.count)
+        var result: [DetectedPerson] = []
+        result.reserveCapacity(detections.count + tracks.count)
+
+        // 2) 第一优先：IoU 匹配（位置+大小同时吻合，抗交叉换 ID）
+        for (dIndex, detection) in detections.enumerated() {
+            var bestIndex = -1
+            var bestIoU = iouMatchThreshold
+            for (tIndex, track) in tracks.enumerated() where !trackMatched[tIndex] {
+                let score = Self.iou(track.rect, detection.box)
+                if score > bestIoU { bestIoU = score; bestIndex = tIndex }
+            }
+            if bestIndex >= 0 {
+                detectionUsed[dIndex] = true
+                trackMatched[bestIndex] = true
+                result.append(merge(index: bestIndex, detection))
+            }
+        }
+
+        // 3) 第二优先：中心距离兜底（新入画/大位移目标）
+        for (dIndex, detection) in detections.enumerated() where !detectionUsed[dIndex] {
+            let center = CGPoint(x: detection.box.midX, y: detection.box.midY)
+            var bestIndex = -1
+            var bestDistance = matchThreshold
+            for (tIndex, track) in tracks.enumerated() where !trackMatched[tIndex] {
+                let distance = hypot(track.rect.midX - center.x, track.rect.midY - center.y)
+                if distance < bestDistance { bestDistance = distance; bestIndex = tIndex }
+            }
+            if bestIndex >= 0 {
+                trackMatched[bestIndex] = true
+                result.append(merge(index: bestIndex, detection))
+            } else {
+                result.append(DetectedPerson(id: UUID(), box: detection.box, confidence: detection.conf))
+            }
+        }
+
+        // 4) 未匹配轨迹：按速度滑行输出（置信度衰减），超限移除
+        for (tIndex, track) in tracks.enumerated() where !trackMatched[tIndex] {
+            var coasted = track
+            coasted.misses += 1
+            if coasted.misses <= maxCoastMisses {
+                coasted.confidence *= 0.8
+                tracks[tIndex] = coasted
+                result.append(DetectedPerson(id: coasted.id, box: coasted.rect, confidence: coasted.confidence))
+            }
+        }
+
+        // 5) 用本帧结果重建轨迹表（merge/滑行均已把最新值写回）
+        tracks = result.map { person in
+            if let index = tracks.firstIndex(where: { $0.id == person.id }) {
+                return tracks[index]
+            }
+            return Track(id: person.id, rect: person.box, velocity: .zero,
+                         confidence: person.confidence, misses: 0)
+        }
         return result
+    }
+
+    /// EMA 更新 + 速度估计
+    private func merge(index: Int, _ detection: (box: CGRect, conf: Float)) -> DetectedPerson {
+        var track = tracks[index]
+        let previousCenter = CGPoint(x: track.rect.midX, y: track.rect.midY)
+        let box = CGRect(
+            x: track.rect.minX + (detection.box.minX - track.rect.minX) * smoothAlpha,
+            y: track.rect.minY + (detection.box.minY - track.rect.minY) * smoothAlpha,
+            width: track.rect.width + (detection.box.width - track.rect.width) * smoothAlpha,
+            height: track.rect.height + (detection.box.height - track.rect.height) * smoothAlpha
+        )
+        let newCenter = CGPoint(x: box.midX, y: box.midY)
+        let residual = CGSize(width: newCenter.x - previousCenter.x,
+                              height: newCenter.y - previousCenter.y)
+        track.velocity = CGSize(width: track.velocity.width * 0.5 + residual.width * 0.5,
+                                height: track.velocity.height * 0.5 + residual.height * 0.5)
+        track.rect = box
+        track.confidence = detection.conf
+        track.misses = 0
+        tracks[index] = track
+        return DetectedPerson(id: track.id, box: box, confidence: detection.conf)
+    }
+
+    private static func iou(_ a: CGRect, _ b: CGRect) -> CGFloat {
+        let inter = a.intersection(b)
+        guard !inter.isNull else { return 0 }
+        let interArea = inter.width * inter.height
+        let unionArea = a.width * a.height + b.width * b.height - interArea
+        guard unionArea > 0 else { return 0 }
+        return interArea / unionArea
     }
 }
