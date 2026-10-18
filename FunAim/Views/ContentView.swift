@@ -14,7 +14,6 @@ struct ContentView: View {
     @State private var mapped: [MappedPerson] = []
     @State private var viewSize: CGSize = .zero
     @State private var panelExpanded = false
-    @State private var previewAngle: CGFloat = 0
     @State private var pinchBase: CGFloat = 1
     @State private var lastLocked = false
     @Environment(\.scenePhase) private var scenePhase
@@ -43,9 +42,6 @@ struct ContentView: View {
                 break
             }
         }
-        .onReceive(NotificationCenter.default.publisher(for: UIDevice.orientationDidChangeNotification)) { _ in
-            applyCurrentDeviceOrientation()
-        }
     }
 
     // MARK: - 相机主界面
@@ -55,7 +51,11 @@ struct ContentView: View {
             // 全画幅预览 + 叠加层（延伸至系统区域之下）
             GeometryReader { geo in
                 ZStack {
-                    CameraPreviewView(session: camera.session, rotationAngle: previewAngle)
+                    // 预览层自动跟随界面方向；其旋转角回调驱动数据管线，所见即所得
+                    CameraPreviewView(session: camera.session) { previewAngle in
+                        let angle = settings.flipRotation ? (previewAngle == 0 ? 180 : 0) : previewAngle
+                        camera.applyRotationAngle(angle)
+                    }
                     OverlayView(persons: mapped,
                                 reticlePoint: aim.reticlePoint(in: geo.size),
                                 targetID: aim.targetID)
@@ -176,7 +176,6 @@ struct ContentView: View {
     // MARK: - 数据管线装配（相机参数每帧直读设置中心）
 
     private func startPipeline() {
-        applyCurrentDeviceOrientation()
         camera.onDetection = { persons in
             guard viewSize != .zero else { return }
             let mapper = CoordinateMapper(viewSize: viewSize, bufferSize: camera.bufferSize)
@@ -185,18 +184,6 @@ struct ContentView: View {
             updateAim(with: mappedPersons, in: viewSize)
         }
         camera.configureAndStart()
-    }
-
-    /// 预览层与数据管线共用同一旋转角：横屏锁定启动时也能保证画面方向正确
-    private func applyCurrentDeviceOrientation() {
-        if var angle = CameraRotation.angle(for: UIDevice.current.orientation) {
-            // 用户手动校正：方向与实际相反时旋转 180°
-            if settings.flipRotation {
-                angle = (angle == 0) ? 180 : 0
-            }
-            previewAngle = angle
-            camera.applyRotationAngle(angle)
-        }
     }
 
     private func updateAim(with persons: [MappedPerson], in size: CGSize) {
