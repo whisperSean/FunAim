@@ -3,7 +3,7 @@ name: iOS Build & IPA
 # 免 Mac 云端构建：push 自动编译验证 + 产出未签名 IPA 构件（供 Windows Sideloadly 侧载）
 on:
   push:
-    paths: ['FunAim/**', 'project.yml', 'Info.plist', '.github/workflows/ios-build.yml']
+    paths: ['FunAim/**', 'Tests/**', 'project.yml', 'Info.plist', '.github/workflows/ios-build.yml']
   workflow_dispatch:
 
 jobs:
