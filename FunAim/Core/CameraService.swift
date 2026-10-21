@@ -223,20 +223,9 @@ final class CameraService: NSObject, ObservableObject {
 
 // MARK: - 旋转角映射
 
-/// 旋转工具（仅 iOS 17 以下回退路径使用）
+/// 旋转工具（iOS 17 以下回退路径使用）
 enum CameraRotation {
-    /// AVCaptureVideoOrientation → 数据管线旋转角
-    static func angle(of orientation: AVCaptureVideoOrientation) -> CGFloat {
-        switch orientation {
-        case .portrait:            return 90
-        case .portraitUpsideDown:  return 270
-        case .landscapeLeft:       return 180
-        case .landscapeRight:      return 0
-        @unknown default:          return 0
-        }
-    }
-
-    /// 数据管线旋转角 → AVCaptureVideoOrientation（iOS 17 以下回退）
+    /// 数据管线旋转角 → AVCaptureVideoOrientation
     static func avOrientation(for angle: CGFloat) -> AVCaptureVideoOrientation {
         switch angle {
         case 90:  return .portrait

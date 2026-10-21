@@ -14,6 +14,7 @@ struct ContentView: View {
     @State private var mapped: [MappedPerson] = []
     @State private var viewSize: CGSize = .zero
     @State private var panelExpanded = false
+    @State private var previewAngle: CGFloat = 0
     @State private var pinchBase: CGFloat = 1
     @State private var lastLocked = false
     @Environment(\.scenePhase) private var scenePhase
@@ -33,6 +34,7 @@ struct ContentView: View {
             case .active:
                 permission.refresh()
                 if permission.status == .authorized {
+                    applyInterfaceOrientation()
                     camera.configureAndStart()
                 }
             case .background:
@@ -41,6 +43,13 @@ struct ContentView: View {
             default:
                 break
             }
+        }
+        // 物理转动手势即使 UI 横屏锁定也会触发：重新按界面方向同步两端旋转角
+        .onReceive(NotificationCenter.default.publisher(for: UIDevice.orientationDidChangeNotification)) { _ in
+            applyInterfaceOrientation()
+        }
+        .onChange(of: settings.flipRotation) { _ in
+            applyInterfaceOrientation()
         }
     }
 
@@ -51,11 +60,8 @@ struct ContentView: View {
             // 全画幅预览 + 叠加层（延伸至系统区域之下）
             GeometryReader { geo in
                 ZStack {
-                    // 预览层自动跟随界面方向；其旋转角回调驱动数据管线，所见即所得
-                    CameraPreviewView(session: camera.session) { previewAngle in
-                        let angle = settings.flipRotation ? (previewAngle == 0 ? 180 : 0) : previewAngle
-                        camera.applyRotationAngle(angle)
-                    }
+                    // 预览层与数据管线共用同一旋转角（来源：UI 界面方向，系统相机同源方案）
+                    CameraPreviewView(session: camera.session, rotationAngle: previewAngle)
                     OverlayView(persons: mapped,
                                 reticlePoint: aim.reticlePoint(in: geo.size),
                                 targetID: aim.targetID)
@@ -176,6 +182,7 @@ struct ContentView: View {
     // MARK: - 数据管线装配（相机参数每帧直读设置中心）
 
     private func startPipeline() {
+        applyInterfaceOrientation()
         camera.onDetection = { persons in
             guard viewSize != .zero else { return }
             let mapper = CoordinateMapper(viewSize: viewSize, bufferSize: camera.bufferSize)
@@ -184,6 +191,22 @@ struct ContentView: View {
             updateAim(with: mappedPersons, in: viewSize)
         }
         camera.configureAndStart()
+    }
+
+    /// 方向唯一来源：UI 界面方向（系统对"用户怎么握"的最终裁决，与系统相机同源）
+    /// 横屏锁定下只有两种取值：interface landscapeRight → 0，interface landscapeLeft → 180
+    /// 预览层与数据管线显式设置为同一角度；"画面旋转 180°"开关作为用户手动校正兜底
+    private func applyInterfaceOrientation() {
+        let scene = UIApplication.shared.connectedScenes.first as? UIWindowScene
+        let interface = scene?.interfaceOrientation ?? .landscapeRight
+        var angle: CGFloat = (interface == .landscapeLeft) ? 180 : 0
+        if settings.flipRotation {
+            angle = (angle == 0) ? 180 : 0
+        }
+        if previewAngle != angle {
+            previewAngle = angle
+        }
+        camera.applyRotationAngle(angle)
     }
 
     private func updateAim(with persons: [MappedPerson], in size: CGSize) {
