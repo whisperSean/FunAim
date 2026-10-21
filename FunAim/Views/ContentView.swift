@@ -245,6 +245,11 @@ struct ContentView: View {
                 Text("FPS \(Int(camera.fps))   推理 \(String(format: "%.0f", camera.inferenceMs))ms   目标 \(camera.detectionCount)")
                     .font(.caption.monospacedDigit())
                     .foregroundColor(.primary)
+                if !camera.diagnostics.isEmpty {
+                    Text(camera.diagnostics)
+                        .font(.caption2.monospacedDigit())
+                        .foregroundColor(.yellow.opacity(0.9))
+                }
             }
         }
         .allowsHitTesting(false)

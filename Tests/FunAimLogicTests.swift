@@ -1,4 +1,5 @@
 import XCTest
+import CoreML
 @testable import FunAim
 
 // MARK: - 坐标映射测试

@@ -32,6 +32,8 @@ final class CameraService: NSObject, ObservableObject {
     @Published private(set) var bufferSize: CGSize = .zero
     /// 当前数据管线旋转角（供预览层同步使用）
     @Published private(set) var dataRotationAngle: CGFloat = 0
+    /// 推理诊断（模型加载/检出数/错误）
+    @Published private(set) var diagnostics = ""
     /// 闪光灯状态
     @Published private(set) var torchOn = false
     /// 当前变焦倍数
@@ -59,6 +61,9 @@ final class CameraService: NSObject, ObservableObject {
 
     private override init() {
         super.init()
+        detector.onDiagnostic = { [weak self] text in
+            self?.diagnostics = text
+        }
         thermalObserver = NotificationCenter.default.addObserver(
             forName: ProcessInfo.thermalStateDidChangeNotification,
             object: nil, queue: .main

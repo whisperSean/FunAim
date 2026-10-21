@@ -59,18 +59,34 @@ final class PersonDetector {
     private let queue = DispatchQueue(label: "funaim.inference", qos: .userInteractive)
     private var tracker = PersonTracker()
 
+    /// 运行时诊断回调（主线程）：模型加载状态 / 各模型检出数 / 推理错误
+    var onDiagnostic: ((String) -> Void)?
+    private var loadStatus = "初始化中"
+
     init() {
         detModel = Self.loadModel(Self.detModelName)
+        loadStatus = detModel == nil ? "det✗加载失败" : "det✓"
+        if detModel != nil, detOutputName == nil { loadStatus += "(输出缺失)" }
         if let m = detModel {
             detInputName = m.modelDescription.inputDescriptionsByName.first?.key ?? "image"
             detOutputName = m.modelDescription.outputDescriptionsByName
                 .first { $0.value.type == .multiArray }?.key
         }
         poseModel = Self.loadModel(Self.poseModelName)
+        loadStatus += poseModel == nil ? " | pose✗加载失败" : " | pose✓"
+        if poseModel != nil, poseOutputName == nil { loadStatus += "(输出缺失)" }
         if let m = poseModel {
             poseInputName = m.modelDescription.inputDescriptionsByName.first?.key ?? "image"
             poseOutputName = m.modelDescription.outputDescriptionsByName
                 .first { $0.value.type == .multiArray }?.key
+        }
+    }
+
+    private func report(_ detCount: Int, _ poseCount: Int, _ error: String?) {
+        var text = loadStatus + " | det:\(detCount) pose:\(poseCount)"
+        if let error { text += " | ⚠️\(error)" }
+        DispatchQueue.main.async { [weak self] in
+            self?.onDiagnostic?(text)
         }
     }
 
@@ -105,6 +121,9 @@ final class PersonDetector {
 
             let settings = AppSettings.shared
             var rawTargets: [RawTarget] = []
+            var detCount = 0
+            var poseCount = 0
+            var inferenceError: String?
 
             // 1) 姿态模型：人物框 + 17 关键点（人物唯一来源，避免双模型重复框）
             if settings.poseEnabled, let poseModel = self.poseModel, let outName = self.poseOutputName {
@@ -112,9 +131,15 @@ final class PersonDetector {
                     let input = try Self.featureProvider(pixelBuffer, inputName: self.poseInputName)
                     let output = try poseModel.prediction(from: input)
                     if let mla = output.featureValue(for: outName)?.multiArrayValue {
-                        rawTargets += Self.decodePose(mla, minConfidence: minConfidence)
+                        let decoded = Self.decodePose(mla, minConfidence: minConfidence)
+                        poseCount = decoded.count
+                        rawTargets += decoded
+                    } else {
+                        inferenceError = "pose输出类型异常"
                     }
-                } catch { }
+                } catch {
+                    inferenceError = "pose:\(error.localizedDescription)"
+                }
             }
 
             // 2) 检测模型：生活物品白名单；姿态关闭时 person 也由此模型给出（无姿态信息）
@@ -124,12 +149,19 @@ final class PersonDetector {
                     let input = try Self.featureProvider(pixelBuffer, inputName: self.detInputName)
                     let output = try detModel.prediction(from: input)
                     if let mla = output.featureValue(for: outName)?.multiArrayValue {
-                        rawTargets += Self.decodeItems(mla,
+                        let decoded = Self.decodeItems(mla,
                                                        includePersons: !settings.poseEnabled,
                                                        minConfidence: minConfidence)
+                        detCount = decoded.count
+                        rawTargets += decoded
+                    } else {
+                        inferenceError = "det输出类型异常"
                     }
-                } catch { }
+                } catch {
+                    inferenceError = "det:\(error.localizedDescription)"
+                }
             }
+            self.report(detCount, poseCount, inferenceError)
 
             let costMs = (CFAbsoluteTimeGetCurrent() - t0) * 1000
 
@@ -159,12 +191,14 @@ final class PersonDetector {
         if let url = Bundle.main.url(forResource: name, withExtension: "mlmodelc") {
             return try? MLModel(contentsOf: url, configuration: config)
         }
+        // 设备端必须先编译：mlmodel/mlpackage 直载会失败
         if let url = Bundle.main.url(forResource: name, withExtension: "mlmodel") {
             guard let compiled = try? MLModel.compileModel(at: url) else { return nil }
             return try? MLModel(contentsOf: compiled, configuration: config)
         }
         if let url = Bundle.main.url(forResource: name, withExtension: "mlpackage") {
-            return try? MLModel(contentsOf: url, configuration: config)
+            guard let compiled = try? MLModel.compileModel(at: url) else { return nil }
+            return try? MLModel(contentsOf: compiled, configuration: config)
         }
         return nil
     }
