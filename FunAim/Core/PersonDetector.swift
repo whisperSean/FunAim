@@ -276,7 +276,7 @@ final class PersonDetector {
 
     // MARK: - 解码（内部可见，供单元测试）
 
-    /// 检测模型 [1, 84, 8400]：4 框 + 80 类分数；白名单过滤（人物按需）
+    /// 检测模型 [1, 84, 8400]：4 框 + 80 类分数；白名单过滤（人物按需）+ NMS 去重
     static func decodeItems(_ mla: MLMultiArray, includePersons: Bool,
                             minConfidence: Float, letterbox: Letterbox = .identity) -> [RawTarget] {
         var result: [RawTarget] = []
@@ -291,51 +291,46 @@ final class PersonDetector {
                                     isPerson: isPerson, state: .unknown,
                                     faceVisible: false, estimatedHeightCm: nil))
         }
-        return result
+        // 关键：同一个目标会有多个重叠候选，必须 NMS 去重（否则满屏重复框）
+        return nms(result, iouThreshold: 0.45)
     }
 
     /// 姿态模型 [1, 56, 8400]：通道 0-3 框、4 置信度、5-55 为 17 关键点(x,y,vis)
     /// 注意：pose 张量不能用通用 argmax（关键点坐标会被误当类别分数），专用通道读取
     static func decodePose(_ mla: MLMultiArray, minConfidence: Float,
                            letterbox: Letterbox = .identity) -> [RawTarget] {
-        let shape = mla.shape.map { $0.intValue }
-        guard shape.count == 3, shape[1] == 56 else { return [] }   // 17 关键点模型
-
-        let count = shape[2]
-        let channelStride = mla.strides[1].intValue
-        let indexStride = mla.strides[2].intValue
+        guard let layout = TensorLayout(mla), layout.channels == 56 else { return [] }
 
         var result: [RawTarget] = []
-        for i in 0..<count {
-            let base = i * indexStride
-            let score = mla[base + 4 * channelStride].floatValue
+        for i in 0..<layout.count {
+            let score = layout.value(mla, channel: 4, index: i)
             guard score >= max(minConfidence, personFloor) else { continue }
 
-            let cx = mla[base].doubleValue
-            let cy = mla[base + channelStride].doubleValue
-            let w = mla[base + 2 * channelStride].doubleValue
-            let h = mla[base + 3 * channelStride].doubleValue
+            let cx = Double(layout.value(mla, channel: 0, index: i))
+            let cy = Double(layout.value(mla, channel: 1, index: i))
+            let w = Double(layout.value(mla, channel: 2, index: i))
+            let h = Double(layout.value(mla, channel: 3, index: i))
             guard let box = boxFromModelPixels(cx: cx, cy: cy, w: w, h: h, letterbox: letterbox) else { continue }
 
-            let keypoints = decodeKeypoints(mla, channelStride: channelStride, index: base, letterbox: letterbox)
+            let keypoints = decodeKeypoints(mla, layout: layout, index: i, letterbox: letterbox)
             let pose = PoseClassifier.classify(keypoints: keypoints)
             result.append(RawTarget(box: box, conf: score, label: "person",
                                     isPerson: true, state: pose.state,
                                     faceVisible: pose.faceVisible, estimatedHeightCm: nil))
         }
-        return result
+        return nms(result, iouThreshold: 0.45)
     }
 
     private static func decodeKeypoints(_ mla: MLMultiArray,
-                                        channelStride: Int,
+                                        layout: TensorLayout,
                                         index: Int,
                                         letterbox: Letterbox) -> [Keypoint] {
         var keypoints: [Keypoint] = []
         keypoints.reserveCapacity(17)
         for k in 0..<17 {
-            let px = mla[index + (5 + 3 * k) * channelStride].doubleValue
-            let py = mla[index + (6 + 3 * k) * channelStride].doubleValue
-            let vis = mla[index + (7 + 3 * k) * channelStride].floatValue
+            let px = Double(layout.value(mla, channel: 5 + 3 * k, index: index))
+            let py = Double(layout.value(mla, channel: 6 + 3 * k, index: index))
+            let vis = layout.value(mla, channel: 7 + 3 * k, index: index)
             // 还原 letterbox 变换（等比缩放，比例关系保持，姿态几何判定不受影响）
             let x = (px - letterbox.padX) / letterbox.contentW
             let y = (py - letterbox.padY) / letterbox.contentH
@@ -366,46 +361,99 @@ final class PersonDetector {
         let classIndex: Int
     }
 
-    /// 遍历 [1, C, N] 张量的 N 个候选，返回最高分类别（检测模型专用）
-    private static func candidates(_ mla: MLMultiArray, labelCount: Int,
-                                   letterbox: Letterbox) -> [Candidate] {
-        let shape = mla.shape.map { $0.intValue }
-        guard shape.count == 3 else { return [] }
-
+    /// 张量布局 + 原始指针读取
+    /// 每帧要读约 70 万个 float，用 MLMultiArray 下标会触发大量 ObjC 调用导致卡顿，
+    /// 这里直接绑定 dataPointer 顺序读取（float32 模型），非 float32 时回退下标访问
+    private struct TensorLayout {
         let channels: Int
         let count: Int
         let channelStride: Int
         let indexStride: Int
-        if shape[1] <= shape[2] {
-            channels = shape[1]; count = shape[2]
-            channelStride = mla.strides[1].intValue; indexStride = mla.strides[2].intValue
-        } else {
-            channels = shape[2]; count = shape[1]
-            channelStride = mla.strides[2].intValue; indexStride = mla.strides[1].intValue
+        let pointer: UnsafePointer<Float>?
+
+        init?(_ mla: MLMultiArray) {
+            let shape = mla.shape.map { $0.intValue }
+            guard shape.count == 3 else { return nil }
+            if shape[1] <= shape[2] {
+                channels = shape[1]; count = shape[2]
+                channelStride = mla.strides[1].intValue
+                indexStride = mla.strides[2].intValue
+            } else {
+                channels = shape[2]; count = shape[1]
+                channelStride = mla.strides[2].intValue
+                indexStride = mla.strides[1].intValue
+            }
+            if mla.dataType == .float32 {
+                pointer = UnsafePointer(mla.dataPointer.bindMemory(to: Float.self, capacity: mla.count))
+            } else {
+                pointer = nil
+            }
         }
-        let classCount = channels - 4
+
+        @inline(__always)
+        func value(_ mla: MLMultiArray, channel: Int, index: Int) -> Float {
+            let flat = channel * channelStride + index * indexStride
+            if let pointer { return pointer[flat] }
+            return mla[flat].floatValue
+        }
+    }
+
+    /// 遍历候选，返回最高分类别（检测模型专用）
+    private static func candidates(_ mla: MLMultiArray, labelCount: Int,
+                                   letterbox: Letterbox) -> [Candidate] {
+        guard let layout = TensorLayout(mla) else { return [] }
+        let classCount = layout.channels - 4
         guard classCount > 0 else { return [] }
 
         var result: [Candidate] = []
-        for i in 0..<count {
-            let base = i * indexStride
-            let cx = mla[base].doubleValue
-            let cy = mla[base + channelStride].doubleValue
-            let w = mla[base + 2 * channelStride].doubleValue
-            let h = mla[base + 3 * channelStride].doubleValue
-            guard w > 2, h > 2 else { continue }   // 退化框（模型输入像素坐标）
+        result.reserveCapacity(64)
+        for i in 0..<layout.count {
+            // 退化框先淘汰（绝大多数锚点在此直接跳过，省掉类别扫描）
+            let w = Double(layout.value(mla, channel: 2, index: i))
+            let h = Double(layout.value(mla, channel: 3, index: i))
+            guard w > 4, h > 4 else { continue }
 
             var bestClass = -1
-            var bestScore = Float(0)
+            var bestScore: Float = 0
             for c in 0..<classCount {
-                let s = mla[base + (4 + c) * channelStride].floatValue
+                let s = layout.value(mla, channel: 4 + c, index: i)
                 if s > bestScore { bestScore = s; bestClass = c }
             }
-            guard bestClass >= 0 else { continue }
+            guard bestClass >= 0, bestScore >= 0.05 else { continue }
+
+            let cx = Double(layout.value(mla, channel: 0, index: i))
+            let cy = Double(layout.value(mla, channel: 1, index: i))
             guard let box = boxFromModelPixels(cx: cx, cy: cy, w: w, h: h, letterbox: letterbox) else { continue }
             result.append(Candidate(box: box, score: bestScore, classIndex: bestClass))
         }
         return result
+    }
+
+    // MARK: - NMS
+
+    /// 同类 IoU 去重：保留高分框，抑制重叠框；上限 maxCount 防满屏
+    private static func nms(_ input: [RawTarget], iouThreshold: Float, maxCount: Int = 24) -> [RawTarget] {
+        guard input.count > 1 else { return Array(input.prefix(maxCount)) }
+        let sorted = input.sorted { $0.conf > $1.conf }
+        var keep: [RawTarget] = []
+        keep.reserveCapacity(min(sorted.count, maxCount))
+        for candidate in sorted {
+            if keep.count >= maxCount { break }
+            let overlapped = keep.contains { existing in
+                existing.label == candidate.label && iou(existing.box, candidate.box) > iouThreshold
+            }
+            if !overlapped { keep.append(candidate) }
+        }
+        return keep
+    }
+
+    private static func iou(_ a: CGRect, _ b: CGRect) -> Float {
+        let inter = a.intersection(b)
+        guard !inter.isNull else { return 0 }
+        let interArea = inter.width * inter.height
+        let unionArea = a.width * a.height + b.width * b.height - interArea
+        guard unionArea > 0 else { return 0 }
+        return Float(interArea / unionArea)
     }
 
     /// 越界/过小框：收敛到画面内并剔除无效框
