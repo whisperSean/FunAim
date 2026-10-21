@@ -1,6 +1,20 @@
+import CoreImage
 import CoreML
 import CoreVideo
 import Foundation
+
+/// Letterbox 变换参数：源画面等比缩放后居中放入 640×640 输入，四周黑边填充
+/// 解码时用这组参数把模型坐标还原回源画面归一化坐标
+struct Letterbox {
+    /// 内容在模型输入中的像素宽/高（≤640）
+    let contentW: Double
+    let contentH: Double
+    let padX: Double
+    let padY: Double
+
+    /// 单位变换（仅用于单元测试）
+    static let identity = Letterbox(contentW: 640, contentH: 640, padX: 0, padY: 0)
+}
 
 /// 解码中间结构（跟踪器输入）
 struct RawTarget {
@@ -66,20 +80,21 @@ final class PersonDetector {
     init() {
         detModel = Self.loadModel(Self.detModelName)
         loadStatus = detModel == nil ? "det✗加载失败" : "det✓"
-        if detModel != nil, detOutputName == nil { loadStatus += "(输出缺失)" }
         if let m = detModel {
             detInputName = m.modelDescription.inputDescriptionsByName.first?.key ?? "image"
             detOutputName = m.modelDescription.outputDescriptionsByName
                 .first { $0.value.type == .multiArray }?.key
         }
+        if detModel != nil, detOutputName == nil { loadStatus += "(输出缺失)" }
+
         poseModel = Self.loadModel(Self.poseModelName)
         loadStatus += poseModel == nil ? " | pose✗加载失败" : " | pose✓"
-        if poseModel != nil, poseOutputName == nil { loadStatus += "(输出缺失)" }
         if let m = poseModel {
             poseInputName = m.modelDescription.inputDescriptionsByName.first?.key ?? "image"
             poseOutputName = m.modelDescription.outputDescriptionsByName
                 .first { $0.value.type == .multiArray }?.key
         }
+        if poseModel != nil, poseOutputName == nil { loadStatus += "(输出缺失)" }
     }
 
     private func report(_ detCount: Int, _ poseCount: Int, _ error: String?) {
@@ -125,13 +140,20 @@ final class PersonDetector {
             var poseCount = 0
             var inferenceError: String?
 
+            // 0) 预处理：模型只接受 640×640 输入，摄像头原始帧必须 letterbox 后再送推理
+            guard let (modelInput, letterbox) = Self.makeLetterboxedBuffer(pixelBuffer) else {
+                self.report(0, 0, "预处理失败")
+                DispatchQueue.main.async { completion([], 0) }
+                return
+            }
+
             // 1) 姿态模型：人物框 + 17 关键点（人物唯一来源，避免双模型重复框）
             if settings.poseEnabled, let poseModel = self.poseModel, let outName = self.poseOutputName {
                 do {
-                    let input = try Self.featureProvider(pixelBuffer, inputName: self.poseInputName)
+                    let input = try Self.featureProvider(modelInput, inputName: self.poseInputName)
                     let output = try poseModel.prediction(from: input)
                     if let mla = output.featureValue(for: outName)?.multiArrayValue {
-                        let decoded = Self.decodePose(mla, minConfidence: minConfidence)
+                        let decoded = Self.decodePose(mla, minConfidence: minConfidence, letterbox: letterbox)
                         poseCount = decoded.count
                         rawTargets += decoded
                     } else {
@@ -146,12 +168,13 @@ final class PersonDetector {
             if settings.itemsEnabled || !settings.poseEnabled,
                let detModel = self.detModel, let outName = self.detOutputName {
                 do {
-                    let input = try Self.featureProvider(pixelBuffer, inputName: self.detInputName)
+                    let input = try Self.featureProvider(modelInput, inputName: self.detInputName)
                     let output = try detModel.prediction(from: input)
                     if let mla = output.featureValue(for: outName)?.multiArrayValue {
                         let decoded = Self.decodeItems(mla,
                                                        includePersons: !settings.poseEnabled,
-                                                       minConfidence: minConfidence)
+                                                       minConfidence: minConfidence,
+                                                       letterbox: letterbox)
                         detCount = decoded.count
                         rawTargets += decoded
                     } else {
@@ -207,12 +230,57 @@ final class PersonDetector {
         try MLDictionaryFeatureProvider(dictionary: [inputName: MLFeatureValue(pixelBuffer: pixelBuffer)])
     }
 
+    private static let ciContext = CIContext(options: [.cacheIntermediates: false])
+
+    /// 预处理：摄像头帧 → 640×640 letterbox（等比缩放 + 居中黑边）
+    /// 模型仅接受固定 640×640 输入，直接送原始 1280×720 会被 CoreML 拒绝
+    private static func makeLetterboxedBuffer(_ source: CVPixelBuffer) -> (CVPixelBuffer, Letterbox)? {
+        let srcW = CVPixelBufferGetWidth(source)
+        let srcH = CVPixelBufferGetHeight(source)
+        guard srcW > 0, srcH > 0 else { return nil }
+        let target = Int(inputSize)
+
+        let scale = min(Double(target) / Double(srcW), Double(target) / Double(srcH))
+        let contentW = Double(srcW) * scale
+        let contentH = Double(srcH) * scale
+        let padX = (Double(target) - contentW) / 2
+        let padY = (Double(target) - contentH) / 2
+
+        var out: CVPixelBuffer?
+        let attrs: [CFString: Any] = [
+            kCVPixelBufferWidthKey: target,
+            kCVPixelBufferHeightKey: target,
+            kCVPixelBufferPixelFormatTypeKey: kCVPixelFormatType_32BGRA,
+            kCVPixelBufferIOSurfacePropertiesKey: [:] as CFDictionary
+        ]
+        guard CVPixelBufferCreate(kCFAllocatorDefault, target, target,
+                                  kCVPixelFormatType_32BGRA,
+                                  attrs as CFDictionary, &out) == kCVReturnSuccess,
+              let output = out else { return nil }
+
+        // 先清黑（未填充区域必须是黑边，而非未初始化内存）
+        CVPixelBufferLockBaseAddress(output, [])
+        if let base = CVPixelBufferGetBaseAddress(output) {
+            memset(base, 0, CVPixelBufferGetDataSize(output))
+        }
+        CVPixelBufferUnlockBaseAddress(output, [])
+
+        let image = CIImage(cvPixelBuffer: source)
+            .transformed(by: CGAffineTransform(scaleX: scale, y: scale))
+            .transformed(by: CGAffineTransform(translationX: padX, y: padY))
+        ciContext.render(image, to: output,
+                         bounds: CGRect(x: 0, y: 0, width: target, height: target),
+                         colorSpace: CGColorSpaceCreateDeviceRGB())
+        return (output, Letterbox(contentW: contentW, contentH: contentH, padX: padX, padY: padY))
+    }
+
     // MARK: - 解码（内部可见，供单元测试）
 
     /// 检测模型 [1, 84, 8400]：4 框 + 80 类分数；白名单过滤（人物按需）
-    static func decodeItems(_ mla: MLMultiArray, includePersons: Bool, minConfidence: Float) -> [RawTarget] {
+    static func decodeItems(_ mla: MLMultiArray, includePersons: Bool,
+                            minConfidence: Float, letterbox: Letterbox = .identity) -> [RawTarget] {
         var result: [RawTarget] = []
-        for candidate in candidates(mla, labelCount: 80) {
+        for candidate in candidates(mla, labelCount: 80, letterbox: letterbox) {
             let isPerson = candidate.classIndex == 0
             if isPerson && !includePersons { continue }
             let label = cocoLabels[candidate.classIndex]
@@ -228,7 +296,8 @@ final class PersonDetector {
 
     /// 姿态模型 [1, 56, 8400]：通道 0-3 框、4 置信度、5-55 为 17 关键点(x,y,vis)
     /// 注意：pose 张量不能用通用 argmax（关键点坐标会被误当类别分数），专用通道读取
-    static func decodePose(_ mla: MLMultiArray, minConfidence: Float) -> [RawTarget] {
+    static func decodePose(_ mla: MLMultiArray, minConfidence: Float,
+                           letterbox: Letterbox = .identity) -> [RawTarget] {
         let shape = mla.shape.map { $0.intValue }
         guard shape.count == 3, shape[1] == 56 else { return [] }   // 17 关键点模型
 
@@ -246,12 +315,9 @@ final class PersonDetector {
             let cy = mla[base + channelStride].doubleValue
             let w = mla[base + 2 * channelStride].doubleValue
             let h = mla[base + 3 * channelStride].doubleValue
-            guard let box = clamp(CGRect(x: (cx - w / 2) / Double(inputSize),
-                                         y: (cy - h / 2) / Double(inputSize),
-                                         width: w / Double(inputSize),
-                                         height: h / Double(inputSize))) else { continue }
+            guard let box = boxFromModelPixels(cx: cx, cy: cy, w: w, h: h, letterbox: letterbox) else { continue }
 
-            let keypoints = decodeKeypoints(mla, channelStride: channelStride, index: base)
+            let keypoints = decodeKeypoints(mla, channelStride: channelStride, index: base, letterbox: letterbox)
             let pose = PoseClassifier.classify(keypoints: keypoints)
             result.append(RawTarget(box: box, conf: score, label: "person",
                                     isPerson: true, state: pose.state,
@@ -262,16 +328,34 @@ final class PersonDetector {
 
     private static func decodeKeypoints(_ mla: MLMultiArray,
                                         channelStride: Int,
-                                        index: Int) -> [Keypoint] {
+                                        index: Int,
+                                        letterbox: Letterbox) -> [Keypoint] {
         var keypoints: [Keypoint] = []
         keypoints.reserveCapacity(17)
         for k in 0..<17 {
-            let x = mla[index + (5 + 3 * k) * channelStride].doubleValue / Double(inputSize)
-            let y = mla[index + (6 + 3 * k) * channelStride].doubleValue / Double(inputSize)
+            let px = mla[index + (5 + 3 * k) * channelStride].doubleValue
+            let py = mla[index + (6 + 3 * k) * channelStride].doubleValue
             let vis = mla[index + (7 + 3 * k) * channelStride].floatValue
+            // 还原 letterbox 变换（等比缩放，比例关系保持，姿态几何判定不受影响）
+            let x = (px - letterbox.padX) / letterbox.contentW
+            let y = (py - letterbox.padY) / letterbox.contentH
             keypoints.append(Keypoint(x: x, y: y, visible: vis >= 0.5))
         }
         return keypoints
+    }
+
+    // MARK: - 坐标还原
+
+    /// 模型像素坐标（640 空间，原点左上）→ 归一化框（原点左下，与 CoordinateMapper 一致）
+    /// YOLO 输出 cy 自顶向下，而下游坐标映射按 Vision 左下原点处理，此处必须翻转 Y
+    private static func boxFromModelPixels(cx: Double, cy: Double, w: Double, h: Double,
+                                           letterbox: Letterbox) -> CGRect? {
+        let xNorm = (cx - w / 2 - letterbox.padX) / letterbox.contentW
+        let yTopNorm = (cy - h / 2 - letterbox.padY) / letterbox.contentH
+        let wNorm = w / letterbox.contentW
+        let hNorm = h / letterbox.contentH
+        guard wNorm > 0, hNorm > 0 else { return nil }
+        return clamp(CGRect(x: xNorm, y: 1 - yTopNorm - hNorm, width: wNorm, height: hNorm))
     }
 
     // MARK: - 张量遍历
@@ -283,7 +367,8 @@ final class PersonDetector {
     }
 
     /// 遍历 [1, C, N] 张量的 N 个候选，返回最高分类别（检测模型专用）
-    private static func candidates(_ mla: MLMultiArray, labelCount: Int) -> [Candidate] {
+    private static func candidates(_ mla: MLMultiArray, labelCount: Int,
+                                   letterbox: Letterbox) -> [Candidate] {
         let shape = mla.shape.map { $0.intValue }
         guard shape.count == 3 else { return [] }
 
@@ -317,10 +402,7 @@ final class PersonDetector {
                 if s > bestScore { bestScore = s; bestClass = c }
             }
             guard bestClass >= 0 else { continue }
-            guard let box = clamp(CGRect(x: (cx - w / 2) / Double(inputSize),
-                                         y: (cy - h / 2) / Double(inputSize),
-                                         width: w / Double(inputSize),
-                                         height: h / Double(inputSize))) else { continue }
+            guard let box = boxFromModelPixels(cx: cx, cy: cy, w: w, h: h, letterbox: letterbox) else { continue }
             result.append(Candidate(box: box, score: bestScore, classIndex: bestClass))
         }
         return result
