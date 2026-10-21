@@ -181,8 +181,8 @@ final class DecodeTests: XCTestCase {
 
     /// 构造 [1, C, N] 张量；fill 闭包内通过 put(channel, index, value) 写入数据
     private func buildTensor(channels: Int, count: Int,
-                             fill: (_ put: (_ channel: Int, _ index: Int, _ value: Float) -> Void) -> Void) -> MLMultiArray {
-        let mla = MLMultiArray(shape: [1, channels, count] as [NSNumber], dataType: .float32)
+                             fill: (_ put: (_ channel: Int, _ index: Int, _ value: Float) -> Void) -> Void) throws -> MLMultiArray {
+        let mla = try MLMultiArray(shape: [1, channels, count] as [NSNumber], dataType: .float32)
         fill { channel, index, value in
             mla[channel * count + index] = NSNumber(value: value)
         }
@@ -191,7 +191,7 @@ final class DecodeTests: XCTestCase {
 
     func testDecodeItemsWhitelistAndPersonExcluded() throws {
         let count = 8400
-        let tensor = buildTensor(channels: 84, count: count) { put in
+        let tensor = try buildTensor(channels: 84, count: count) { put in
             // 候选 100：person（class 0）
             put(0, 100, 320); put(1, 100, 320); put(2, 100, 60); put(3, 100, 160)
             put(4, 100, 0.95)
@@ -210,7 +210,7 @@ final class DecodeTests: XCTestCase {
 
     func testDecodeItemsIncludesPersonWhenRequested() throws {
         let count = 8400
-        let tensor = buildTensor(channels: 84, count: count) { put in
+        let tensor = try buildTensor(channels: 84, count: count) { put in
             put(0, 100, 320); put(1, 100, 320); put(2, 100, 60); put(3, 100, 160)
             put(4, 100, 0.95)
         }
@@ -221,7 +221,7 @@ final class DecodeTests: XCTestCase {
 
     func testDecodePoseKeypoints() throws {
         let count = 8400
-        let tensor = buildTensor(channels: 56, count: count) { put in
+        let tensor = try buildTensor(channels: 56, count: count) { put in
             put(0, 500, 320); put(1, 500, 320); put(2, 500, 100); put(3, 500, 300)
             put(4, 500, 0.95)                                   // 置信度
             put(5, 500, 320); put(6, 500, 200); put(7, 500, 0.9) // 鼻子 x/y/vis
