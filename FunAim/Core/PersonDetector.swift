@@ -451,10 +451,12 @@ final class PersonTracker {
     }
 
     private static func make(_ target: RawTarget) -> DetectedPerson {
+        // 非人物不带姿态/人脸字段（与 output() 保持一致）
         DetectedPerson(id: UUID(), box: target.box, confidence: target.conf,
                        label: target.label, isPerson: target.isPerson,
-                       state: target.state, faceVisible: target.faceVisible,
-                       estimatedHeightCm: target.estimatedHeightCm)
+                       state: target.isPerson ? target.state : nil,
+                       faceVisible: target.isPerson ? target.faceVisible : nil,
+                       estimatedHeightCm: target.isPerson ? nil : target.estimatedHeightCm)
     }
 
     private static func output(_ track: Track) -> DetectedPerson {
