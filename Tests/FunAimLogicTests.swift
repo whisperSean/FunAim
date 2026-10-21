@@ -74,7 +74,7 @@ final class PoseClassifierTests: XCTestCase {
     }
 
     func testHalfBodyWhenHipsMissing() {
-        let (state, face) = PoseClassifier.classify(keypoints: keypoints(hipsVisible: false, noseVisible: true))
+        let (state, face) = PoseClassifier.classify(keypoints: keypoints(noseVisible: true, hipsVisible: false))
         XCTAssertEqual(state, .halfBody)
         XCTAssertTrue(face)
     }
@@ -179,20 +179,19 @@ final class PersonTrackerTests: XCTestCase {
 
 final class DecodeTests: XCTestCase {
 
-    /// 构造 [1, C, N] 张量并在指定候选位写入数据
+    /// 构造 [1, C, N] 张量；fill 闭包内通过 put(channel, index, value) 写入数据
     private func buildTensor(channels: Int, count: Int,
-                             write: (Int, Int, (Float) -> Void) -> Void) -> MLMultiArray {
+                             fill: (_ put: (_ channel: Int, _ index: Int, _ value: Float) -> Void) -> Void) -> MLMultiArray {
         let mla = MLMultiArray(shape: [1, channels, count] as [NSNumber], dataType: .float32)
-        write(channels, count, { channel, index, value in
+        fill { channel, index, value in
             mla[channel * count + index] = NSNumber(value: value)
-        })
+        }
         return mla
     }
 
     func testDecodeItemsWhitelistAndPersonExcluded() throws {
         let count = 8400
-        var tensor: MLMultiArray?
-        tensor = buildTensor(channels: 84, count: count) { channels, _, put in
+        let tensor = buildTensor(channels: 84, count: count) { put in
             // 候选 100：person（class 0）
             put(0, 100, 320); put(1, 100, 320); put(2, 100, 60); put(3, 100, 160)
             put(4, 100, 0.95)
@@ -203,7 +202,7 @@ final class DecodeTests: XCTestCase {
             put(0, 300, 320); put(1, 300, 400); put(2, 300, 120); put(3, 300, 80)
             put(6, 300, 0.93)
         }
-        let result = PersonDetector.decodeItems(tensor!, includePersons: false, minConfidence: 0.5)
+        let result = PersonDetector.decodeItems(tensor, includePersons: false, minConfidence: 0.5)
         XCTAssertEqual(result.count, 1)
         XCTAssertEqual(result[0].label, "cup")
         XCTAssertFalse(result[0].isPerson)
@@ -211,7 +210,7 @@ final class DecodeTests: XCTestCase {
 
     func testDecodeItemsIncludesPersonWhenRequested() throws {
         let count = 8400
-        let tensor = buildTensor(channels: 84, count: count) { _, _, put in
+        let tensor = buildTensor(channels: 84, count: count) { put in
             put(0, 100, 320); put(1, 100, 320); put(2, 100, 60); put(3, 100, 160)
             put(4, 100, 0.95)
         }
@@ -222,7 +221,7 @@ final class DecodeTests: XCTestCase {
 
     func testDecodePoseKeypoints() throws {
         let count = 8400
-        let tensor = buildTensor(channels: 56, count: count) { _, _, put in
+        let tensor = buildTensor(channels: 56, count: count) { put in
             put(0, 500, 320); put(1, 500, 320); put(2, 500, 100); put(3, 500, 300)
             put(4, 500, 0.95)                                   // 置信度
             put(5, 500, 320); put(6, 500, 200); put(7, 500, 0.9) // 鼻子 x/y/vis
