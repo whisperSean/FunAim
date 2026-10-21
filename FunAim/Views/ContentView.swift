@@ -218,7 +218,9 @@ struct ContentView: View {
             }
             return
         }
-        if let target = aim.selectTarget(from: persons, viewSize: size, lockStrength: settings.lockStrength) {
+        // 瞄准仅锁定人物（物品只做识别展示）
+        let aimable = persons.filter { $0.person.isPerson }
+        if let target = aim.selectTarget(from: aimable, viewSize: size, lockStrength: settings.lockStrength) {
             aim.moveReticle(toward: target.center, in: size, tracking: settings.aimTracking)
         } else {
             // 无目标时准星缓慢回归画面中心

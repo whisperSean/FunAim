@@ -95,9 +95,9 @@ struct SettingsView: View {
                 .labelsHidden()
             }
 
-            // 类别筛选：默认仅识别人物
-            Toggle("识别全部类别（车/猫狗等）", isOn: $settings.showAllClasses)
-                .font(.subheadline.weight(.medium))
+            // 识别开关：姿态（人物状态+人脸）与生活物品，均默认开启
+            toggleRow("人物姿态识别（站立/蹲姿/半身·人脸）", $settings.poseEnabled)
+            toggleRow("生活物品识别（32 类家居物品）", $settings.itemsEnabled)
 
             VStack(alignment: .leading, spacing: 4) {
                 HStack {
@@ -109,7 +109,7 @@ struct SettingsView: View {
                 Slider(value: $settings.minConfidence, in: 0.05...0.9)
             }
 
-            Text("流畅每 3 帧推理一次最省电，精准逐帧推理最连贯；调高灵敏度可检出更远、更模糊的目标，但误检会增加。默认仅识别人物，开启「识别全部类别」后显示车、猫狗等所有类别并带类别标签。全部推理均在设备本地完成。")
+            Text("流畅每 3 帧推理一次最省电，精准逐帧推理最连贯；调高灵敏度可检出更远、更模糊的目标，但误检会增加。人物姿态与生活物品识别均可独立开关，全部推理在设备本地完成。")
                 .font(.caption2)
                 .foregroundColor(.secondary)
         }

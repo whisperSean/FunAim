@@ -21,16 +21,16 @@ struct OverlayView: View {
                 }
             }
 
-            // 顶部居中射线：从屏幕顶端中点射向每个已识别目标，锁定目标高亮
+            // 顶部居中射线：从屏幕顶端中点射向每个已识别人物，锁定目标高亮
             if settings.aimEnabled, settings.showAimLine {
                 let origin = CGPoint(x: size.width / 2, y: 0)
-                for person in persons {
+                for person in persons where person.person.isPerson {
                     drawRay(&context, from: origin, to: person.center, emphasized: person.id == targetID)
                 }
             }
 
             if settings.aimEnabled, settings.showAimLine,
-               let target = persons.first(where: { $0.id == targetID }) {
+               let target = persons.first(where: { $0.id == targetID && $0.person.isPerson }) {
                 drawAimLine(&context, from: reticlePoint, to: target.center)
             }
 
@@ -82,18 +82,24 @@ struct OverlayView: View {
     }
 
     private func drawConfidence(_ context: inout GraphicsContext, person: MappedPerson) {
-        let label = person.person.label
-        let isPerson = label.lowercased() == "person"
-        let text: Text
-        if settings.showAllClasses && !isPerson {
-            text = Text("\(label) \(Int(person.person.confidence * 100))%")
-                .font(.system(size: 11, weight: .bold))
-                .foregroundColor(.white)
+        var parts: [String] = []
+        if person.person.isPerson {
+            if let state = person.person.state, state != .unknown {
+                parts.append(state.rawValue)
+            }
+            if let face = person.person.faceVisible {
+                parts.append(face ? "露脸" : "未露脸")
+            }
         } else {
-            text = Text("\(Int(person.person.confidence * 100))%")
-                .font(.system(size: 11, weight: .bold))
-                .foregroundColor(.white)
+            parts.append(person.person.label)
+            if let cm = person.person.estimatedHeightCm {
+                parts.append("≈\(Int(cm))cm")
+            }
         }
+        parts.append("\(Int(person.person.confidence * 100))%")
+        let text = Text(parts.joined(separator: " · "))
+            .font(.system(size: 11, weight: .bold))
+            .foregroundColor(.white)
         let resolved = context.resolve(text)
         let textSize = resolved.measure(in: CGSize(width: 100, height: 20))
         let centerY = max(person.viewRect.minY - 11, 12)

@@ -40,6 +40,16 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             build 2>&1 | tee build.log | grep -E "(error:|warning:|BUILD)"
 
+      - name: Unit Tests (simulator)
+        run: |
+          set -o pipefail
+          xcodebuild test \
+            -project FunAim.xcodeproj \
+            -scheme FunAim \
+            -destination 'platform=iOS Simulator,name=iPhone 15,OS=latest' \
+            CODE_SIGNING_ALLOWED=NO \
+            2>&1 | tee test.log | grep -E "(Test Suite|Test Case.*(passed|failed)|TEST)" | tail -40
+
       - name: Upload simulator .app artifact
         if: success()
         uses: actions/upload-artifact@v4
@@ -82,16 +92,25 @@ jobs:
           ./venv/bin/pip install --quiet ultralytics coremltools "numpy<2"
           # 不带 NMS 管线：导出原始 [1,84,8400] 张量，由 App 端自行解码（person 类别硬过滤）
           ./venv/bin/python -c "from ultralytics import YOLO; YOLO('yolo11n.pt').export(format='coreml', imgsz=640, nms=False)"
+          # 姿态模型：17 关键点（站立/蹲姿/半身 + 人脸露出判定）
+          ./venv/bin/python -c "from ultralytics import YOLO; YOLO('yolo11n-pose.pt').export(format='coreml', imgsz=640)"
           if [ -f yolo11n.mlmodel ]; then
             mkdir -p FunAim/Resources
             mv yolo11n.mlmodel FunAim/Resources/yolo11n.mlmodel
-            echo "YOLO model bundled: $(du -h FunAim/Resources/yolo11n.mlmodel)"
+            echo "YOLO det model bundled: $(du -h FunAim/Resources/yolo11n.mlmodel)"
           elif [ -d yolo11n.mlpackage ]; then
             mkdir -p FunAim/Resources
             mv yolo11n.mlpackage FunAim/Resources/yolo11n.mlpackage
-            echo "YOLO model bundled (mlpackage)"
+            echo "YOLO det model bundled (mlpackage)"
+          fi
+          if [ -f yolo11n-pose.mlmodel ]; then
+            mv yolo11n-pose.mlmodel FunAim/Resources/yolo11n-pose.mlmodel
+            echo "YOLO pose model bundled: $(du -h FunAim/Resources/yolo11n-pose.mlmodel)"
+          elif [ -d yolo11n-pose.mlpackage ]; then
+            mv yolo11n-pose.mlpackage FunAim/Resources/yolo11n-pose.mlpackage
+            echo "YOLO pose model bundled (mlpackage)"
           else
-            echo "::error::YOLO model export failed"
+            echo "::error::pose model export failed"
             exit 1
           fi
 

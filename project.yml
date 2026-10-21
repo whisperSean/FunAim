@@ -32,9 +32,24 @@ targets:
     scheme:
       buildTargets:
         - FunAim
+      testTargets:
+        - FunAimTests
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.funlab.funaim
         PRODUCT_NAME: FunAim
         INFOPLIST_FILE: FunAim/Info.plist
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+
+  FunAimTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: Tests
+    dependencies:
+      - target: FunAim
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.funlab.funaim.tests
+        TEST_HOST: $(BUILT_PRODUCTS_DIR)/FunAim.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/FunAim
+        BUNDLE_LOADER: $(TEST_HOST)
