@@ -17,9 +17,11 @@ final class CoordinateMapperTests: XCTestCase {
         let mapper = CoordinateMapper(viewSize: CGSize(width: 800, height: 400),
                                       bufferSize: CGSize(width: 1280, height: 720))
         let mapped = mapper.map(CGRect(x: 0, y: 0, width: 1, height: 1))
-        // 等比填充：短边完全覆盖，长边溢出裁剪
-        XCTAssertEqual(mapped.height, 400, accuracy: 1.0)
-        XCTAssertGreaterThan(mapped.width, 800 - 1.0)
+        // 等比填充：整幅画面映射到"缩放后缓冲区尺寸"——
+        // 限制维度（宽度 800）精确撑满，另一维度（高度 450）按比例溢出，溢出部分被屏幕裁剪
+        XCTAssertEqual(mapped.width, 800, accuracy: 1.0)
+        XCTAssertEqual(mapped.height, 450, accuracy: 1.0)
+        XCTAssertGreaterThanOrEqual(mapped.height, 400)
     }
 
     func testTopOfBufferMapsToTopOfView() {
