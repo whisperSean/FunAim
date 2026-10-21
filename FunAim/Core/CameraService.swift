@@ -96,6 +96,8 @@ final class CameraService: NSObject, ObservableObject {
                 }
             }
             self.session.startRunning()
+            // startRunning 可能重置连接角度：重新断言，保证首帧方向正确
+            self.applyRotationOnConnection(self.lastRotationAngle)
             self.detector.warmup()   // 推理预热，消除首帧冷启动
             DispatchQueue.main.async { self.isRunning = self.session.isRunning }
         }

@@ -23,6 +23,20 @@ final class PersonDetector {
     static let detModelName = "yolo11n"
     static let poseModelName = "yolo11n-pose"
 
+    /// COCO 80 类标签（class 0 = person），物品解码按下标取类别名
+    static let cocoLabels: [String] = [
+        "person", "bicycle", "car", "motorcycle", "airplane", "bus", "train", "truck", "boat",
+        "traffic light", "fire hydrant", "stop sign", "parking meter", "bench", "bird", "cat", "dog",
+        "horse", "sheep", "cow", "elephant", "bear", "zebra", "giraffe", "backpack", "umbrella",
+        "handbag", "tie", "suitcase", "frisbee", "skis", "snowboard", "sports ball", "kite",
+        "baseball bat", "baseball glove", "skateboard", "surfboard", "tennis racket", "bottle",
+        "wine glass", "cup", "fork", "knife", "spoon", "bowl", "banana", "apple", "sandwich",
+        "orange", "broccoli", "carrot", "hot dog", "pizza", "donut", "cake", "chair", "couch",
+        "potted plant", "bed", "dining table", "toilet", "tv", "laptop", "mouse", "remote",
+        "keyboard", "cell phone", "microwave", "oven", "toaster", "sink", "refrigerator", "book",
+        "clock", "vase", "scissors", "teddy bear", "hair drier", "toothbrush"
+    ]
+
     /// 生活物品白名单
     static let householdItems: Set<String> = [
         "bottle", "wine glass", "cup", "fork", "knife", "spoon", "bowl",
@@ -173,7 +187,7 @@ final class PersonDetector {
             guard candidate.score >= floor else { continue }
             result.append(RawTarget(box: candidate.box, conf: candidate.score, label: label,
                                     isPerson: isPerson, state: .unknown,
-                                    faceVisible: nil, estimatedHeightCm: nil))
+                                    faceVisible: false, estimatedHeightCm: nil))
         }
         return result
     }
