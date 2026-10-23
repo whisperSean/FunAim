@@ -69,7 +69,7 @@ final class AppSettings: ObservableObject {
 
     private init() {
         detectionMode = DetectionMode(rawValue: d.string(forKey: "fa.detectionMode") ?? "") ?? .balanced
-        minConfidence = d.object(forKey: "fa.minConfidence") as? Double ?? 0.65
+        minConfidence = d.object(forKey: "fa.minConfidence") as? Double ?? 0.7
         poseEnabled = d.object(forKey: "fa.poseEnabled") as? Bool ?? true
         itemsEnabled = d.object(forKey: "fa.itemsEnabled") as? Bool ?? true
         flipRotation = d.object(forKey: "fa.flipRotation") as? Bool ?? false
@@ -88,7 +88,7 @@ final class AppSettings: ObservableObject {
 
     func resetToDefaults() {
         detectionMode = .balanced
-        minConfidence = 0.65
+        minConfidence = 0.7
         poseEnabled = true
         itemsEnabled = true
         flipRotation = false

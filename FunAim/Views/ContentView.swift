@@ -186,7 +186,11 @@ struct ContentView: View {
         camera.onDetection = { persons in
             guard viewSize != .zero else { return }
             let mapper = CoordinateMapper(viewSize: viewSize, bufferSize: camera.bufferSize)
-            let mappedPersons = persons.map { MappedPerson(person: $0, viewRect: mapper.map($0.box)) }
+            let mappedPersons = persons.map { target -> MappedPerson in
+                let rect = mapper.map(target.box)
+                let aim = target.aimPoint.map { mapper.mapPoint($0) }
+                return MappedPerson(person: target, viewRect: rect, aimViewPoint: aim)
+            }
             mapped = mappedPersons
             updateAim(with: mappedPersons, in: viewSize)
         }
@@ -218,10 +222,10 @@ struct ContentView: View {
             }
             return
         }
-        // 瞄准仅锁定人物（物品只做识别展示）
+        // 瞄准仅锁定人物（物品只做识别展示），准星贴合头部瞄准点
         let aimable = persons.filter { $0.person.isPerson }
         if let target = aim.selectTarget(from: aimable, viewSize: size, lockStrength: settings.lockStrength) {
-            aim.moveReticle(toward: target.center, in: size, tracking: settings.aimTracking)
+            aim.moveReticle(toward: target.aimTarget, in: size, tracking: settings.aimTracking)
         } else {
             // 无目标时准星缓慢回归画面中心
             aim.moveReticle(toward: CGPoint(x: size.width / 2, y: size.height / 2),

@@ -21,17 +21,17 @@ struct OverlayView: View {
                 }
             }
 
-            // 顶部居中射线：从屏幕顶端中点射向每个已识别人物，锁定目标高亮
+            // 顶部居中射线：从屏幕顶端中点射向每个已识别人物头部，颜色统一
             if settings.aimEnabled, settings.showAimLine {
                 let origin = CGPoint(x: size.width / 2, y: 0)
                 for person in persons where person.person.isPerson {
-                    drawRay(&context, from: origin, to: person.center, emphasized: person.id == targetID)
+                    drawRay(&context, from: origin, to: person.aimTarget)
                 }
             }
 
             if settings.aimEnabled, settings.showAimLine,
                let target = persons.first(where: { $0.id == targetID && $0.person.isPerson }) {
-                drawAimLine(&context, from: reticlePoint, to: target.center)
+                drawAimLine(&context, from: reticlePoint, to: target.aimTarget)
             }
 
             drawCrosshair(&context, at: reticlePoint, locked: settings.aimEnabled && targetID != nil)
@@ -112,25 +112,19 @@ struct OverlayView: View {
         context.draw(resolved, at: CGPoint(x: centerX, y: centerY))
     }
 
-    // MARK: - 顶部居中射线（ESP snapline）
+    // MARK: - 顶部居中射线（颜色统一，无锁定区分）
 
-    private func drawRay(_ context: inout GraphicsContext, from origin: CGPoint, to point: CGPoint, emphasized: Bool) {
+    private func drawRay(_ context: inout GraphicsContext, from origin: CGPoint, to point: CGPoint) {
         var path = Path()
         path.move(to: origin)
         path.addLine(to: point)
-        if emphasized {
-            // 锁定目标：辉光 + 高亮
-            context.stroke(path, with: .color(.white.opacity(0.15)), lineWidth: 6)
-        }
-        let color = emphasized ? Color.white.opacity(0.95) : Color.white.opacity(0.30)
-        context.stroke(path, with: .color(color),
-                       style: StrokeStyle(lineWidth: emphasized ? 2.5 : 1.5, lineCap: .round))
+        context.stroke(path, with: .color(.white.opacity(0.30)),
+                       style: StrokeStyle(lineWidth: 1.5, lineCap: .round))
 
-        // 目标端点标记
+        // 目标端点小白点
         var dot = Path()
-        let radius: CGFloat = emphasized ? 5 : 3
-        dot.addEllipse(in: CGRect(x: point.x - radius, y: point.y - radius, width: radius * 2, height: radius * 2))
-        context.fill(dot, with: .color(emphasized ? .green : .white.opacity(0.6)))
+        dot.addEllipse(in: CGRect(x: point.x - 3, y: point.y - 3, width: 6, height: 6))
+        context.fill(dot, with: .color(.white.opacity(0.6)))
     }
 
     // MARK: - 准星瞄准线

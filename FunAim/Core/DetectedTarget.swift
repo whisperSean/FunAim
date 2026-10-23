@@ -25,6 +25,8 @@ struct DetectedPerson {
     let faceVisible: Bool?
     /// 物品估算实际高度（cm，参照画面中人物身高 1.7m；仅物品且同帧有人物时有值）
     let estimatedHeightCm: Double?
+    /// 瞄准点（归一化 Vision 坐标）：人物=头部（鼻/肩上推），物品=中心
+    let aimPoint: CGPoint?
 }
 
 // MARK: - 姿态分类器（纯逻辑，可单测）

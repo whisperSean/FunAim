@@ -126,7 +126,8 @@ final class PersonTrackerTests: XCTestCase {
         RawTarget(box: CGRect(x: x, y: y, width: 0.2, height: 0.4),
                   conf: conf, label: label, isPerson: isPerson,
                   state: isPerson ? .standing : .unknown,
-                  faceVisible: isPerson, estimatedHeightCm: nil)
+                  faceVisible: isPerson, estimatedHeightCm: nil,
+                  aimPoint: CGPoint(x: x + 0.1, y: y + 0.35))
     }
 
     func testStableIDAcrossFrames() {

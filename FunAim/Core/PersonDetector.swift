@@ -25,6 +25,7 @@ struct RawTarget {
     let state: PersonState
     let faceVisible: Bool
     let estimatedHeightCm: Double?
+    let aimPoint: CGPoint?
 }
 
 /// 双模型检测器：
@@ -60,7 +61,7 @@ final class PersonDetector {
         "microwave", "oven", "sink", "refrigerator", "clock", "vase"
     ]
 
-    private static let personFloor: Float = 0.6
+    private static let personFloor: Float = 0.68
     private static let itemFloor: Float = 0.5
     private static let inputSize: Float = 640
 
@@ -287,9 +288,14 @@ final class PersonDetector {
             if !isPerson && !householdItems.contains(label) { continue }
             let floor: Float = isPerson ? max(minConfidence, personFloor) : max(minConfidence, itemFloor)
             guard candidate.score >= floor else { continue }
+            // 人物无关键点时瞄准点取框顶 12%（头部近似）；物品取中心
+            let aimPoint: CGPoint = isPerson
+                ? CGPoint(x: candidate.box.midX, y: candidate.box.maxY - candidate.box.height * 0.12)
+                : CGPoint(x: candidate.box.midX, y: candidate.box.midY)
             result.append(RawTarget(box: candidate.box, conf: candidate.score, label: label,
                                     isPerson: isPerson, state: .unknown,
-                                    faceVisible: false, estimatedHeightCm: nil))
+                                    faceVisible: false, estimatedHeightCm: nil,
+                                    aimPoint: aimPoint))
         }
         // 关键：同一个目标会有多个重叠候选，必须 NMS 去重（否则满屏重复框）
         return nms(result, iouThreshold: 0.45)
@@ -314,11 +320,32 @@ final class PersonDetector {
 
             let keypoints = decodeKeypoints(mla, layout: layout, index: i, letterbox: letterbox)
             let pose = PoseClassifier.classify(keypoints: keypoints)
+            let aimPoint = headAimPoint(keypoints: keypoints, box: box)
             result.append(RawTarget(box: box, conf: score, label: "person",
                                     isPerson: true, state: pose.state,
-                                    faceVisible: pose.faceVisible, estimatedHeightCm: nil))
+                                    faceVisible: pose.faceVisible, estimatedHeightCm: nil,
+                                    aimPoint: aimPoint))
         }
         return nms(result, iouThreshold: 0.45)
+    }
+
+    /// 头部瞄准点：优先鼻子；不可见时用肩中点上推 0.6×肩宽；再退化用框顶 12%
+    private static func headAimPoint(keypoints: [Keypoint], box: CGRect) -> CGPoint {
+        let nose = keypoints[KeypointIndex.nose]
+        if nose.visible {
+            // 关键点为顶部原点归一化，转 Vision 左下原点
+            return CGPoint(x: nose.x, y: 1 - nose.y)
+        }
+        let ls = keypoints[KeypointIndex.leftShoulder]
+        let rs = keypoints[KeypointIndex.rightShoulder]
+        if ls.visible || rs.visible {
+            let mid = ls.visible && rs.visible
+                ? CGPoint(x: (ls.x + rs.x) / 2, y: (ls.y + rs.y) / 2)
+                : (ls.visible ? CGPoint(x: ls.x, y: ls.y) : CGPoint(x: rs.x, y: rs.y))
+            let shoulderW = abs(ls.x - rs.x)
+            return CGPoint(x: mid.x, y: 1 - (mid.y - max(shoulderW, 0.05) * 0.6))
+        }
+        return CGPoint(x: box.midX, y: box.maxY - box.height * 0.12)
     }
 
     private static func decodeKeypoints(_ mla: MLMultiArray,
@@ -480,15 +507,17 @@ final class PersonTracker {
         var state: PersonState
         var faceVisible: Bool
         var estimatedHeightCm: Double?
+        var aimPoint: CGPoint?
         var misses: Int
     }
 
     private var tracks: [Track] = []
     private let smoothAlpha: CGFloat = 0.6
-    private let matchThreshold: CGFloat = 0.14
-    private let iouMatchThreshold: CGFloat = 0.25
-    /// 遮挡滑行帧数：仅 1 帧，避免"幽灵框"
-    private let maxCoastMisses = 1
+    /// 中心距离兜底阈值放宽：配合速度外推，移动目标不易断轨
+    private let matchThreshold: CGFloat = 0.22
+    private let iouMatchThreshold: CGFloat = 0.2
+    /// 遮挡滑行 3 帧：目标短暂丢失/移动时保持方框
+    private let maxCoastMisses = 3
 
     func assign(_ targets: [RawTarget]) -> [DetectedPerson] {
         for index in tracks.indices {
@@ -549,7 +578,8 @@ final class PersonTracker {
                          confidence: person.confidence, label: person.label,
                          isPerson: person.isPerson, state: person.state ?? .unknown,
                          faceVisible: person.faceVisible ?? false,
-                         estimatedHeightCm: person.estimatedHeightCm, misses: 0)
+                         estimatedHeightCm: person.estimatedHeightCm,
+                         aimPoint: person.aimPoint, misses: 0)
         }
         return result
     }
@@ -575,6 +605,7 @@ final class PersonTracker {
         track.state = target.state
         track.faceVisible = target.faceVisible
         track.estimatedHeightCm = target.estimatedHeightCm
+        track.aimPoint = target.aimPoint
         track.misses = 0
         tracks[index] = track
         return Self.output(track)
@@ -586,7 +617,8 @@ final class PersonTracker {
                        label: target.label, isPerson: target.isPerson,
                        state: target.isPerson ? target.state : nil,
                        faceVisible: target.isPerson ? target.faceVisible : nil,
-                       estimatedHeightCm: target.isPerson ? nil : target.estimatedHeightCm)
+                       estimatedHeightCm: target.isPerson ? nil : target.estimatedHeightCm,
+                       aimPoint: target.aimPoint)
     }
 
     private static func output(_ track: Track) -> DetectedPerson {
@@ -594,7 +626,8 @@ final class PersonTracker {
                        label: track.label, isPerson: track.isPerson,
                        state: track.isPerson ? track.state : nil,
                        faceVisible: track.isPerson ? track.faceVisible : nil,
-                       estimatedHeightCm: track.isPerson ? nil : track.estimatedHeightCm)
+                       estimatedHeightCm: track.isPerson ? nil : track.estimatedHeightCm,
+                       aimPoint: track.aimPoint)
     }
 
     private static func iou(_ a: CGRect, _ b: CGRect) -> CGFloat {

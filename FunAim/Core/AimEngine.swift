@@ -5,8 +5,12 @@ import Foundation
 struct MappedPerson {
     let person: DetectedPerson
     let viewRect: CGRect
+    /// 瞄准点（视图坐标）：头部（人物）/ 中心（物品）
+    let aimViewPoint: CGPoint?
     var center: CGPoint { CGPoint(x: viewRect.midX, y: viewRect.midY) }
     var id: UUID { person.id }
+    /// 实际瞄准点：优先头部，缺失时回退中心
+    var aimTarget: CGPoint { aimViewPoint ?? center }
 }
 
 /// 自动瞄准引擎：目标选择 + 准星平滑追踪，纯本地几何计算
@@ -31,7 +35,8 @@ final class AimEngine: ObservableObject {
         var best: MappedPerson?
         var bestScore = CGFloat.greatestFiniteMagnitude
         for person in persons {
-            let distance = hypot(person.center.x - current.x, person.center.y - current.y)
+            let aimAt = person.aimTarget
+            let distance = hypot(aimAt.x - current.x, aimAt.y - current.y)
             let confidencePenalty = (1 - CGFloat(person.person.confidence)) * viewSize.width * 0.25
             let stickyBonus = (person.id == targetID ? -stick : 0)
             let score = distance + confidencePenalty + stickyBonus
