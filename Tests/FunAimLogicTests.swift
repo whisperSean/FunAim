@@ -146,13 +146,15 @@ final class PersonTrackerTests: XCTestCase {
         XCTAssertNotEqual(first[0].id, second[0].id)
     }
 
-    func testCoastOneFrameThenDisappear() {
+    func testCoastThenDisappear() {
         let tracker = PersonTracker()
         _ = tracker.assign([target(0.3, 0.3)])
-        let coasted = tracker.assign([])     // 遮挡 1 帧：滑行输出
-        XCTAssertEqual(coasted.count, 1)
-        let gone = tracker.assign([])        // 超限：移除
-        XCTAssertEqual(gone.count, 0)
+        // 滑行 3 帧（防丢框）：每帧仍输出外推框
+        XCTAssertEqual(tracker.assign([]).count, 1)
+        XCTAssertEqual(tracker.assign([]).count, 1)
+        XCTAssertEqual(tracker.assign([]).count, 1)
+        // 超限移除
+        XCTAssertEqual(tracker.assign([]).count, 0)
     }
 
     func testItemsCarryLabelAndNotPerson() {
