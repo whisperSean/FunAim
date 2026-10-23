@@ -199,7 +199,8 @@ final class PersonDetector {
                 return RawTarget(box: target.box, conf: target.conf, label: target.label,
                                  isPerson: target.isPerson, state: target.state,
                                  faceVisible: target.faceVisible,
-                                 estimatedHeightCm: est.estimatedHeightCm)
+                                 estimatedHeightCm: est.estimatedHeightCm,
+                                 aimPoint: target.aimPoint)
             }
 
             let persons = self.tracker.assign(withSize)
