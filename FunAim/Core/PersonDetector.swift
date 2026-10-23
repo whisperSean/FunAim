@@ -61,6 +61,15 @@ final class PersonDetector {
         "microwave", "oven", "sink", "refrigerator", "clock", "vase"
     ]
 
+    /// 物品解码扫描通道：person(0) + 白名单类别（33 通道 vs 全量 80，约 2.4 倍提速）
+    static let itemScanChannels: [Int] = {
+        var channels = [0]
+        for (index, label) in cocoLabels.enumerated() where index > 0 && householdItems.contains(label) {
+            channels.append(index)
+        }
+        return channels
+    }()
+
     private static let personFloor: Float = 0.68
     private static let itemFloor: Float = 0.5
     private static let inputSize: Float = 640
@@ -73,6 +82,10 @@ final class PersonDetector {
     private var poseOutputName: String?
     private let queue = DispatchQueue(label: "funaim.inference", qos: .userInteractive)
     private var tracker = PersonTracker()
+    /// 在飞帧标志：上一帧推理未完成时丢弃新帧，防止队列堆积
+    private var inflight = false
+    /// 双模型交替标志
+    private var alternatePose = true
 
     /// 运行时诊断回调（主线程）：模型加载状态 / 各模型检出数 / 推理错误
     var onDiagnostic: ((String) -> Void)?
@@ -128,11 +141,15 @@ final class PersonDetector {
     }
 
     /// 异步双模型检测，completion 回调主线程
+    /// 性能策略：在飞帧丢弃（防队列堆积）+ 双模型交替推理（单帧成本减半，
+    /// 人物框由跟踪器 3 帧滑行衔接，视觉无断裂）
     func detect(pixelBuffer: CVPixelBuffer,
                 minConfidence: Float,
                 completion: @escaping ([DetectedPerson], Double) -> Void) {
         queue.async { [weak self] in
-            guard let self else { return }
+            guard let self, !self.inflight else { return }   // 上一帧未推完：直接丢弃
+            self.inflight = true
+            defer { self.inflight = false }
             let t0 = CFAbsoluteTimeGetCurrent()
 
             let settings = AppSettings.shared
@@ -148,8 +165,20 @@ final class PersonDetector {
                 return
             }
 
+            // 双模型交替：两者都开启时各跑一半帧；只开一个时该模型每帧都跑
+            let runPose: Bool
+            let runItems: Bool
+            if settings.poseEnabled && settings.itemsEnabled {
+                runPose = self.alternatePose
+                runItems = !self.alternatePose
+                self.alternatePose.toggle()
+            } else {
+                runPose = settings.poseEnabled
+                runItems = settings.itemsEnabled
+            }
+
             // 1) 姿态模型：人物框 + 17 关键点（人物唯一来源，避免双模型重复框）
-            if settings.poseEnabled, let poseModel = self.poseModel, let outName = self.poseOutputName {
+            if runPose, let poseModel = self.poseModel, let outName = self.poseOutputName {
                 do {
                     let input = try Self.featureProvider(modelInput, inputName: self.poseInputName)
                     let output = try poseModel.prediction(from: input)
@@ -166,7 +195,7 @@ final class PersonDetector {
             }
 
             // 2) 检测模型：生活物品白名单；姿态关闭时 person 也由此模型给出（无姿态信息）
-            if settings.itemsEnabled || !settings.poseEnabled,
+            if runItems || !settings.poseEnabled,
                let detModel = self.detModel, let outName = self.detOutputName {
                 do {
                     let input = try Self.featureProvider(modelInput, inputName: self.detInputName)
@@ -175,7 +204,8 @@ final class PersonDetector {
                         let decoded = Self.decodeItems(mla,
                                                        includePersons: !settings.poseEnabled,
                                                        minConfidence: minConfidence,
-                                                       letterbox: letterbox)
+                                                       letterbox: letterbox,
+                                                       scanChannels: Self.itemScanChannels)
                         detCount = decoded.count
                         rawTargets += decoded
                     } else {
@@ -280,9 +310,11 @@ final class PersonDetector {
 
     /// 检测模型 [1, 84, 8400]：4 框 + 80 类分数；白名单过滤（人物按需）+ NMS 去重
     static func decodeItems(_ mla: MLMultiArray, includePersons: Bool,
-                            minConfidence: Float, letterbox: Letterbox = .identity) -> [RawTarget] {
+                            minConfidence: Float, letterbox: Letterbox = .identity,
+                            scanChannels: [Int]? = nil) -> [RawTarget] {
         var result: [RawTarget] = []
-        for candidate in candidates(mla, labelCount: 80, letterbox: letterbox) {
+        for candidate in candidates(mla, labelCount: 80, letterbox: letterbox,
+                                    scanChannels: scanChannels) {
             let isPerson = candidate.classIndex == 0
             if isPerson && !includePersons { continue }
             let label = cocoLabels[candidate.classIndex]
@@ -427,11 +459,14 @@ final class PersonDetector {
     }
 
     /// 遍历候选，返回最高分类别（检测模型专用）
+    /// scanChannels：仅扫描指定类别通道（性能优化：白名单 33 通道 vs 全量 80 通道）
     private static func candidates(_ mla: MLMultiArray, labelCount: Int,
-                                   letterbox: Letterbox) -> [Candidate] {
+                                   letterbox: Letterbox,
+                                   scanChannels: [Int]? = nil) -> [Candidate] {
         guard let layout = TensorLayout(mla) else { return [] }
         let classCount = layout.channels - 4
         guard classCount > 0 else { return [] }
+        let scan = scanChannels ?? Array(0..<classCount)
 
         var result: [Candidate] = []
         result.reserveCapacity(64)
@@ -443,7 +478,8 @@ final class PersonDetector {
 
             var bestClass = -1
             var bestScore: Float = 0
-            for c in 0..<classCount {
+            for c in scan {
+                guard c < classCount else { continue }
                 let s = layout.value(mla, channel: 4 + c, index: i)
                 if s > bestScore { bestScore = s; bestClass = c }
             }
